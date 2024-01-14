@@ -37,6 +37,7 @@ body{
     margin-top: 0;
     margin-bottom: 10vh;
     background-attachment: fixed;
+    text-shadow: rgba(0,0,0,.5) 2px 3px 2px, black 0px 0px 2px;
 }
 table {
     width: 100%;
@@ -81,6 +82,91 @@ footer {
     box-shadow: 0 0 10px 1px rgba(0,0,0,.25);
     backdrop-filter: blur(15px) saturate(400%);
     text-shadow: rgba(0,0,0,.5) 2px 3px 2px, black 0px 0px 2px;
+}
+button {
+    background: linear-gradient(
+        rgba(24,24,24, .75),
+        rgba(32,32,32, .50), 50%,
+        rgba(0,0,0, .75), 75%,
+        rgba(16,16,16, .75)
+    );
+    border: 1px solid rgba(128,128,128,.25);
+    box-shadow: 0 0 10px 1px rgba(0,0,0,.25);
+    color: white;
+    border-top-right-radius: 4px;
+    border-bottom-right-radius: 4px;
+    text-shadow: rgba(0,0,0,.5) 2px 3px 2px, black 0px 0px 2px;
+}
+header > * {
+    font-size: 1.1em;
+}
+input#search {
+    border-top-left-radius: 4px;
+    border-bottom-left-radius: 4px;
+    border: 1px solid rgba(128,128,128,.25);
+    box-shadow: 0 0 10px 1px rgba(0,0,0,.25);
+    background: linear-gradient(
+        rgba(255,255,225, .75),
+        rgba(240,240,240, .50), 50%,
+        rgba(192,192,192, .75), 75%,
+        rgba(224,224,224, .75)
+    );
+    padding-left: 12px;
+    padding-right: 12px;
+    letter-spacing: 2px;
+    font-weight: bold;
+    text-shadow: white 0px 0px 1px, white 0px 0px 3px;
+    text-transform: uppercase;
+}
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: none;
+  width: 15rem;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+    background: linear-gradient(
+        rgba(255,255,225, .75),
+        rgba(192,192,192, .50), 50%,
+        rgba(64,64,64, .75), 75%,
+        rgba(128,128,128, .75)
+    );
+    height: 0.75em;
+  border-radius: 4px;
+    border: 1px solid rgba(0,0,0,.25);
+    box-shadow: 0 0 10px 1px rgba(0,0,0,.25);
+}
+input[type="range"]::-moz-range-track {
+    background: linear-gradient(
+        rgba(255,255,225, .75),
+        rgba(192,192,192, .50), 50%,
+        rgba(64,64,64, .75), 75%,
+        rgba(128,128,128, .75)
+    );
+    height: 0.75em;
+    border-radius: 4px;
+    border: 1px solid rgba(0,0,0,.25);
+    box-shadow: 0 0 10px 1px rgba(0,0,0,.25);
+}
+input[type="range"]::-moz-range-progress {
+    background: linear-gradient(
+        rgba(0,255,0, .75),
+        rgba(0,224,0, .50), 50%,
+        rgba(0,128,0, .75), 75%,
+        rgba(0,192,0, .75)
+    );
+    height: 0.75em;
+    border-top-left-radius: 4px;
+    border-bottom-left-radius: 4px;
+    border: 1px solid rgba(128,128,128,.25);
+    box-shadow: 0 0 10px 1px rgba(0,0,0,.25);
+}
+input[type="range"]::-moz-range-thumb {
+    opacity: 0;
+}
+footer {
+    padding-bottom: 16px;
 }
 footer > * {
     margin: 8px;
@@ -131,15 +217,42 @@ section.videogrid>figure, #oopnext>div>figure{
     max-width: 480px;
     flex-basis: 320px;
     margin: 0;
+    margin-bottom: 16px;
 }
 figure details summary{
     padding: 4px;
+    background: linear-gradient(
+        rgba(24,24,24, .75),
+        rgba(32,32,32, .50), 50%,
+        rgba(0,0,0, .75), 75%,
+        rgba(16,16,16, .75)
+    );
+    border: 1px solid rgba(128,128,128,.25);
+    box-shadow: 0 0 10px 1px rgba(0,0,0,.25);
+    color: white;
+    border-bottom-left-radius: 4px;
+    border-bottom-right-radius: 4px;
+    text-shadow: rgba(0,0,0,.5) 2px 3px 2px, black 0px 0px 2px;
 }
 figure details span{
     display: block;
     padding: 6px;
     height: 100px;
     overflow-y: scroll;
+    background: linear-gradient(
+        rgba(0,0,0,.75),
+        rgba(32,32,32, .25) 10%,
+        rgba(32,32,32, .50), 75%,
+        rgba(16,16,16, .75) 90%,
+        rgba(0,0,0, .75)
+    );
+    margin-top: -3px;
+    border: 1px solid rgba(128,128,128,.25);
+    box-shadow: 0 0 10px 1px rgba(0,0,0,.25);
+    backdrop-filter: blur(15px) saturate(400%);
+    text-shadow: rgba(0,0,0,.5) 2px 3px 2px, black 0px 0px 2px;
+    border-bottom-left-radius: 8px;
+    border-bottom-right-radius: 8px;
 }
 footer details .song{
     margin-left: 8px;
@@ -247,8 +360,6 @@ def generate_channelpage(info, endless=False):
     html="<h1>%s</h1>"%(info['channel'])
 
     subscriptions = request.cookies.get('subscriptions')
-    print(info['uploader_id'])
-    print( subscriptions.split(','))
     if subscriptions is not None and info['uploader_id'][1:].lower().replace(' ','') in subscriptions.split(','):
         html+="<a href='subscribe'>Unsubscribe</a>"
     else:
@@ -664,15 +775,14 @@ def user_pause(name):
 
 @app.route("/user/<name>/subscribe")
 def user_subscribe(name):
-    subscriptions = request.cookies.get('subscriptions').lower()
-    print(subscriptions)
-    subscriptions = set(subscriptions.split(',')) if subscriptions is not None else set()
+    subscriptions = request.cookies.get('subscriptions')
+    subscriptions = set(subscriptions.lower().split(',')) if subscriptions is not None else set()
     if name.lower().replace(' ','') in subscriptions:
         subscriptions.remove(name.lower().replace(' ',''))
     else:
         subscriptions.add(name.lower())
     result = redirect('/user/%s/'%name)
-    result.set_cookie('subscriptions', ",".join(sorted(subscriptions)))
+    result.set_cookie('subscriptions', ",".join(sorted(subscriptions)), max_age=34560000)
     return result
 
 @app.route("/play/<video>")
@@ -777,7 +887,7 @@ def generate_home_page(index):
         html+='<section class="videogrid">'
         for page in pages:
             page=sorted(page, key=lambda info: info['uploader_id'])
-            page=sorted(page, key=lambda info: os.path.exists('cache/watched/%s.watched'%info['id']))
+            page=sorted(page, key=lambda info: os.path.exists('cache/started/%s.started'%info['id']))
             for info in page:
                 html+=generate_description(info, clickable=True)
         html+="</section>"
