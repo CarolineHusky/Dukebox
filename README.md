@@ -18,6 +18,7 @@ __Functionalities__:
 * Multiple users for a single player
 * Allows one to search youtube, visit channels, and "subscribe" to a channel  
    (videos from subscribed channels will be shown on the home page, per user cookie)
+* Supports sponsorblock
 * Allows one to browse a local music library by song name, artist and album; and search.  
    (no IDv3 support, artist album track number and track name are derived from the filename and folder structure)
 * Shuffle on the local music folder when the queue runs out
