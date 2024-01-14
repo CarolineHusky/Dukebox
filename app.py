@@ -8,6 +8,7 @@ import os
 import hashlib
 import itertools
 import random
+import urllib, hashlib, re
 
 MUSIC_FOLDER="/home/mii/Music/Music"
 
@@ -266,6 +267,43 @@ small{
 }
     """.replace('\n','')
 
+sponsorblock_times=[]
+
+# based on https://github.com/po5/mpv_sponsorblock/blob/master/sponsorblock_shared/sponsorblock.py
+def sponsorblock(video_id):
+    global sponsorblock_times
+    sponsorblock_times=[]
+    VIDEO_ID_REGEX = re.compile(
+    r"(.+?)(\/)(watch\x3Fv=)?(embed\/watch\x3Ffeature\=player_embedded\x26v=)?([a-zA-Z0-9_-]{11})+"
+)
+    video_id_match = VIDEO_ID_REGEX.match(video_id)
+    if video_id_match is None:
+        return
+    video_id = video_id_match.group(5)
+    opener = urllib.request.build_opener()
+    opener.addheaders = [("User-Agent", "mpv_sponsorblock/1.0 (https://github.com/po5/mpv_sponsorblock)")]
+    urllib.request.install_opener(opener)
+    sha = hashlib.sha256(video_id.encode("utf-8")).hexdigest()[:4]
+    times = []
+    try:
+        response = urllib.request.urlopen("https://sponsor.ajay.app/api/skipSegments/" + sha)
+        segments = json.load(response)
+        for segment in segments:
+            if sha and video_id != segment["videoID"]:
+                continue
+            if sha:
+                for s in segment["segments"]:
+                    times.append(s["segment"][0:2])
+        #print(":".join(times))
+    except (TimeoutError, urllib.error.URLError) as e:
+        print("sponsorblock error %s"%str(e))
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            print("")
+        else:
+            print("sponsorblock error %s"%str(e))
+    sponsorblock_times=times
+    return times
 
 def is_in_playlist(video):
     global player
@@ -488,6 +526,7 @@ def get_ytdlp_info(url, cache, endless=False):
 def mpv_handle_start(event):
     os.makedirs("cache/started", exist_ok=True)
     filename = list(filter(lambda x: x['id']==event.data.playlist_entry_id, player.playlist))[0]['filename']
+    sponsorblock(filename)
     filename=filename.split('/')[-1]
     open('cache/started/%s.started'%filename, 'a').close()
 
@@ -526,6 +565,14 @@ def mpv_handle_play(video):
     def end(event):
         mpv_handle_end(event)
 
+    @player.property_observer('time-pos')
+    def time_observer(_name, value):
+        if value is None:
+            return
+        for start,end in sponsorblock_times:
+            if start<=value<end:
+                player.time_pos = end
+
     videopath="https://youtu.be/"+video
     playlist=list(map(lambda x: x['filename'],player.playlist))
     if len(player.playlist) == 0:
@@ -551,6 +598,14 @@ def mpv_handle_play_file(path):
     @player.event_callback('end-file')
     def end(event):
         mpv_handle_end(event)
+
+    @player.property_observer('time-pos')
+    def time_observer(_name, value):
+        if value is None:
+            return
+        for start,end in sponsorblock_times:
+            if start<=value<end:
+                player.time_pos = end
 
     playlist=list(map(lambda x: x['filename'],player.playlist))
     if len(player.playlist) == 0:
