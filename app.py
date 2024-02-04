@@ -533,7 +533,10 @@ def mpv_handle_start(event):
 def mpv_handle_end(event):
     if event.data.reason==0: #EOF
         os.makedirs("cache/watched", exist_ok=True)
-        filename = list(filter(lambda x: x['id']==event.data.playlist_entry_id, player.playlist))[0]['filename']
+        filename = list(filter(lambda x: x['id']==event.data.playlist_entry_id, player.playlist))
+        if len(filename)<1:
+            return
+        filename = filename[0]['filename']
         filename=filename.split('/')[-1]
         open('cache/watched/%s.watched'%filename, 'a').close()
         if player.playlist[-1]['id']==event.data.playlist_entry_id and shuffle and not player.pause:
@@ -580,7 +583,7 @@ def mpv_handle_play(video):
     elif is_in_playlist(video) is not None:
         player.playlist_remove(playlist.index(videopath))
     elif not any(filter(lambda x:'current' in x and x['current'], player.playlist)):
-        player.play(path)
+        player.play(videopath)
     else:
         player.playlist_append(videopath)
 
