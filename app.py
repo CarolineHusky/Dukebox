@@ -509,7 +509,10 @@ def _get_ytdlp_info(url, endless=False):
         info = ydl.extract_info(url, download=False)
     return info
 
+infolist={}
+
 def get_ytdlp_info(url, cache, endless=False):
+    infolist[url]=cache
     info = None
     os.makedirs("cache/"+cache.split('/')[0], exist_ok=True)
     if os.path.exists("cache/"+cache):
@@ -552,6 +555,18 @@ def mpv_handle_end(event):
                     os.remove('cache/started/%s.started'%ele)
                 player.play(find_track(ele))
 
+def time_observer(value):
+    if value is None:
+        return
+    for start,end in sponsorblock_times:
+        if start<=value<end:
+            print("Sponsorblock skipped from %f to %f"%(value,end))
+            player.time_pos = end
+    if player.time_remaining != None and int(player.time_remaining)==90:
+        for url in infolist:
+            get_ytdlp_info(url,infolist[url])
+
+
 
 def mpv_handle_play(video):
     global player
@@ -569,12 +584,8 @@ def mpv_handle_play(video):
         mpv_handle_end(event)
 
     @player.property_observer('time-pos')
-    def time_observer(_name, value):
-        if value is None:
-            return
-        for start,end in sponsorblock_times:
-            if start<=value<end:
-                player.time_pos = end
+    def observe_time(_name, value):
+        time_observer(value)
 
     videopath="https://youtu.be/"+video
     playlist=list(map(lambda x: x['filename'],player.playlist))
@@ -603,12 +614,8 @@ def mpv_handle_play_file(path):
         mpv_handle_end(event)
 
     @player.property_observer('time-pos')
-    def time_observer(_name, value):
-        if value is None:
-            return
-        for start,end in sponsorblock_times:
-            if start<=value<end:
-                player.time_pos = end
+    def observe_time(_name, value):
+        time_observer(value)
 
     playlist=list(map(lambda x: x['filename'],player.playlist))
     if len(player.playlist) == 0:
@@ -921,20 +928,18 @@ def search(name):
 def generate_home_page(index):
     subscriptions = request.cookies.get('subscriptions')
     windex=int(index)+1
-    index=windex*3
+    index=windex*36
     html='<h1>Welcome to Mii\'s Dukebox!</h1>'
     html+='<a href="/music/">Local music</a>'
     if subscriptions is not None:
         subscriptions = set(sorted(subscriptions.split(',')))
-        ydl_opts = {'extract_flat': 'in_playlist', 'playlist_items': '1:%d'%index }
         pages = []
         for i in range(index):
             pages.append([])
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            for user in subscriptions:
+        for user in subscriptions:
                 if user=='':
                     continue
-                info = ydl.extract_info("https://www.youtube.com/@%s/videos"%user, download=False)
+                info = get_ytdlp_info("https://www.youtube.com/@%s/videos"%user, "user/%s.json"%user)
                 for i, ment in enumerate(info['entries']):
                     ment['channel']=info['channel']
                     ment['channel_id']=info['channel_id']
@@ -947,7 +952,8 @@ def generate_home_page(index):
             page=sorted(page, key=lambda info: info['uploader_id'])
             page=sorted(page, key=lambda info: os.path.exists('cache/started/%s.started'%info['id']))
             for info in page:
-                html+=generate_description(info, clickable=True)
+                if not os.path.exists("cache/watched/%s.watched"%info["id"]):
+                    html+=generate_description(info, clickable=True)
         html+="</section>"
         html+="<h2 style='margin:auto;'><a href='%d'>Load more...</a></h2>"%windex
     return html
