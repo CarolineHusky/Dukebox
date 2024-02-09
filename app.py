@@ -1,6 +1,7 @@
 from flask import Flask,redirect, request
 import json
 import yt_dlp
+from yt_dlp import extractor
 from functools import lru_cache
 import time
 import os.path
@@ -9,6 +10,12 @@ import hashlib
 import itertools
 import random
 import urllib, hashlib, re
+import threading
+import logging
+import sys
+import psutil
+#log = logging.getLogger('werkzeug')
+#log.setLevel(logging.ERROR)
 
 MUSIC_FOLDER="/home/mii/Music/Music"
 
@@ -267,6 +274,234 @@ small{
 }
     """.replace('\n','')
 
+telegram_token=None
+telegram_last_processed=0
+telegram_chats = set()
+home_url = ""
+shutdown = False
+
+def telegram_bot_execute(command, data=None, method=None):
+    try:
+        headers={}
+        global telegram_token
+        if data is not None:
+            data=json.dumps(data).encode("utf-8")
+            headers["Content-Length"]=len(data)
+            headers["Content-Type"]="application/json"
+        if telegram_token is None:
+            with open("telegram_token.txt") as f:
+                telegram_token=f.read().strip("\n")
+        url="https://api.telegram.org/bot"+telegram_token+"/" + command
+        request=urllib.request.Request(url,data,headers,method=method)
+        return json.load(urllib.request.urlopen(request))
+    except urllib.error.HTTPError as e:
+        body = json.loads(e.read().decode())  # Read the body of the error response
+        if "too big" in body['description']:
+            raise ValueError("File too big")
+        print("ERROR:")
+        print(body)
+        raise
+
+def telegram_bot_get_updates():
+    global telegram_last_processed
+    global telegram_chats
+    if telegram_last_processed==0 and os.path.exists(os.path.join("cache","telegram_last_update.txt")):
+        with open(os.path.join("cache","telegram_last_update.txt")) as f:
+            telegram_last_processed=int(f.read().strip("\n"))
+    if len(telegram_chats)==0 and os.path.exists(os.path.join("cache","telegram_chats.txt")):
+        with open(os.path.join("cache","telegram_chats.txt")) as f:
+            telegram_chats = f.read().split("\n")
+    updates=telegram_bot_execute("getUpdates", {"offset": telegram_last_processed+1, "allowed_updates": ["message"]})["result"]
+    for update in updates:
+        if telegram_last_processed is None or update['update_id']>telegram_last_processed:
+            telegram_last_processed = update['update_id']
+            with open(os.path.join("cache","telegram_last_update.txt"), "w") as f:
+                f.write("%d"%telegram_last_processed)
+        if "chat" in update["message"]:
+            if str(update["message"]["chat"]["id"]) not in telegram_chats:
+                telegram_chats.add(str(update["message"]["chat"]["id"]))
+                with open(os.path.join("cache","telegram_chats.txt"), "w") as f:
+                    f.write("\n".join(telegram_chats))
+
+        yield update["message"]
+
+def telegram_bot_download_file(file_id, destination=None):
+    file_info=telegram_bot_execute("getFile", {"file_id": file_id})
+    file_path=file_info['result']['file_path']
+    if destination is None:
+        destination=file_info['result']['file_path'].split('/')[-1]
+    os.makedirs(os.path.join("cache","telegram"), exist_ok=True)
+    destination=os.path.join("cache","telegram",destination)
+    if os.path.exists(destination):
+        return destination
+
+    try:
+        url="https://api.telegram.org/file/bot"+telegram_token+"/"+file_path
+        urllib.request.urlretrieve(url, destination)
+        return destination
+    except urllib.error.HTTPError as e:
+        body = json.loads(e.read().decode())  # Read the body of the error response
+        print("ERROR:")
+        print(body)
+        raise
+
+
+def telegram_bot_process_updates():
+    global shuffle
+    global shutdown
+    has_updates=False
+    for update in telegram_bot_get_updates():
+        for ele in update:
+            if ele=="text":
+                text = update['text']
+                print(text)
+                if text.startswith("/vol"):
+                    player.volume = max(0, min(100,int(text.split(" ")[-1])))
+                    continue
+                if text=="/shuffle":
+                    shuffle = True
+                    continue
+                if text=="/noshuffle":
+                    shuffle = False
+                    continue
+                if text=="/next":
+                    player.playlist_next()
+                    continue
+                if text=="/pause":
+                    player.play = False
+                    continue
+                if text=="/play":
+                    player.play = True
+                    continue
+                if text=="/shutdown":
+                    shutdown = True
+                    quit()
+                    continue
+                    #if len(text)>6:
+                for e in extractor.list_extractor_classes():
+                    if e.working() and e.suitable(text) and e.IE_NAME != "generic":
+                        try:
+                            mpv_handle_play_file(text, True)
+                        except Exception as e:
+                            if type(e.exc_info[1]) is yt_dlp.utils.ExtractorError:
+                                telegram_bot_send_message(e.exc_info[1].orig_msg,update["chat"]["id"])
+                            else:
+                                telegram_bot_send_message("Sorry, this URL is currently broken...",update["chat"]["id"])
+                            break
+                        has_updates=True
+                        break
+                else:
+                    try:
+                        get_info(text, text.replace("/","-"))
+                        mpv_handle_play_file(text, True)
+                        has_updates=True
+                        break
+                    except Exception:
+                        telegram_bot_send_message("Sorry, can't handle this URL or command...",update["chat"]["id"])
+            elif isinstance(update[ele],dict) and "file_id" in update[ele]:
+                telegram_bot_execute("sendChatAction",{"chat_id":update["chat"]["id"],"action":"typing"})
+                try:
+                    if "file_name" in update[ele]:
+                        download_file=telegram_bot_download_file(update[ele]["file_id"],update[ele]["file_name"])
+                    elif "set_name" in update[ele] and "emoji" in update[ele]:
+                        download_file=telegram_bot_download_file(update[ele]["file_id"],update[ele]["set_name"]+" "+update[ele]["emoji"])
+                    else:
+                        download_file=telegram_bot_download_file(update[ele]["file_id"])
+                    mpv_handle_play_file(download_file, True)
+                    has_updates=True
+                    print(download_file)
+                except ValueError:
+                    telegram_bot_send_message("Sorry, this file is too big.\nThese simple bots support files up to 20MB...",update["chat"]["id"])
+            elif ele=="photo":
+                telegram_bot_execute("sendChatAction",{"chat_id":update["chat"]["id"],"action":"typing"})
+                photos=sorted(update[ele], key=lambda p:-p["height"])
+                bestphoto=photos[0]
+                for photo in photos:
+                    if photo['height']<1080:
+                        break
+                    bestphoto=photo
+                download_file=telegram_bot_download_file(bestphoto['file_id'])
+                mpv_handle_play_file(download_file, True)
+                print(download_file)
+                has_updates=True
+    if has_updates:
+        telegram_send_started()
+
+
+
+def telegram_bot_send_message(text, chat, entries=None):
+    if entries is None:
+        telegram_bot_execute("sendMessage", {"chat_id": chat, "text": text})
+    else:
+        telegram_bot_execute("sendMessage", {"chat_id": chat, "text": text, "entities": entries})
+def telegram_bot_send_message_all(text, entries=None):
+    global telegram_chats
+    if telegram_chats==[] and os.path.exists(os.path.join("cache","telegram_chats.txt")):
+        with open(os.path.join("cache","telegram_chats.txt")) as f:
+            telegram_chats = f.read().split("\n")
+    for chat in telegram_chats:
+        if chat!="":
+            telegram_bot_send_message(text,chat, entries)
+
+current_telegram_message = None
+alerted_low_battery = False
+def telegram_send_started():
+    global current_telegram_message
+    global alerted_low_battery
+    playlist=list(map(lambda x: get_info(x['filename']),itertools.dropwhile(lambda x: 'current' not in x or not x['current'], player.playlist)))
+    text=""
+    battery = psutil.sensors_battery()
+    if battery.power_plugged==True:
+        text+="\u26A1 %02d%% "%battery.percent
+        alerted_low_battery = False
+    else:
+        text+="\U0001FAAB %02d%% "%battery.percent
+    entities=[]
+    for index,entry in enumerate(playlist):
+        if index<2:
+            offset=len(text.encode('utf-16-le'))//2
+            if index==0:
+                text+="Currently playing:\n"
+            elif index==1:
+                text+="\nUp next:\n"
+            length=len(text.encode('utf-16-le'))//2-offset
+            entities.append({"type": "bold", "offset": offset, "length": length})
+        if 'uploader' in entry:
+            offset=len(text.encode('utf-16-le'))//2
+            text+=entry['uploader']
+            length=len(text.encode('utf-16-le'))//2-offset
+            if 'uploader_id' in entry:
+                url = home_url + "user/%s"%entry['uploader_id'][1:]
+                entities.append({"type": "text_link", "offset": offset, "length": length, "url": url})
+            elif 'channel_id' in entry:
+                url = home_url + "channel/%s"%entry['channel_id']
+                entities.append({"type": "text_link", "offset": offset, "length": length, "url": url})
+            text+=": "
+        text+="%s"%entry['title'].replace("@","\uFF20")
+        text+="\n"
+    if text=="":
+        return
+    if shuffle:
+        offset=len(text.encode('utf-16-le'))//2
+        text+="And then shuffle...\n"
+        length=len(text.encode('utf-16-le'))//2-offset
+        entities.append({"type": "italic", "offset": offset, "length": length})
+    if text==current_telegram_message:
+        return
+    current_telegram_message = text
+    text+="\n"
+    text+="For sheduling new media visit "
+    offset=len(text.encode('utf-16-le'))//2
+    text+=home_url
+    length=len(text.encode('utf-16-le'))//2-offset
+    entities.append({"type": "url", "offset": offset, "length": length})
+    text+=" or send a file or link!"
+
+
+
+    telegram_bot_send_message_all(text, entities)
+
+
 sponsorblock_times=[]
 
 # based on https://github.com/po5/mpv_sponsorblock/blob/master/sponsorblock_shared/sponsorblock.py
@@ -353,7 +588,7 @@ def generate_description(info, uploader=None, clickable=False):
     if clickable:
         html+="</a>"
     html+="<figcaption>"
-    if not info['id'].startswith("/"):
+    if not info['id'].startswith("/") and not info['id'].startswith("cache"):
         html+="<details data-source=\"/describe/%s\"><summary>"%info['id']
     else:
         html+="<a class='song' href=\"/music/play/%s\">"%info['title']
@@ -382,7 +617,7 @@ def generate_description(info, uploader=None, clickable=False):
             html+=' <a href="/user/%s">%s</a>'%(info['uploader_id'][1:],info['uploader'])
         elif 'channel_id' in info and info['channel_id'] is not None:
             html+=' <a href="/channel/%s">%s</a>'%(info['channel_id'],info['uploader'])
-    if not info['id'].startswith("/"):
+    if not info['id'].startswith("/") and not info['id'].startswith("cache"):
         html+="</summary>"
         html+="<span>"
         if 'description' in info and info['description'] is not None:
@@ -435,17 +670,32 @@ def get_info(videourl):
     if videourl.startswith(MUSIC_FOLDER+"/"):
         name = videourl.split("/")[-1]
         return {'title': name, 'id': videourl}
-    videoid=videourl.lstrip("https://www.youtube.com/watch?v=")
-    info = get_ytdlp_info(videourl, "video/%s.json"%videoid)
+    elif videourl.startswith(os.path.join("cache","telegram")):
+        name = videourl.split("/")[-1]
+        return {'title': name, 'id': videourl}
+
+    for e in extractor.list_extractor_classes():
+        if e.working() and e.suitable(videourl) and e.IE_NAME != "generic":
+            videoid=e.IE_NAME.replace(":","_").lower()+"/"+e.get_temp_id(videourl).replace("/","-")
+            break
+
+    #videoid=videourl.lstrip("https://www.youtube.com/watch?v=")
+    try:
+        info = get_ytdlp_info(videourl, "video/%s.json"%videoid)
+    except Exception:
+        raise
     return info
 
 def generate_page(page, title):
-    html="<html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><link rel=\"stylesheet\" href=\"/style.css\"><title>%s</title>"%title
+    html="<html><head><title>%s</title><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"%title#<link rel=\"stylesheet\" href=\"/style.css\">"%title
+    html+="<style>"+style()+"</style>"
     if player is not None and not player.pause and player.time_remaining is not None:
         html+="<meta http-equiv=\"refresh\" content=\"%d\">"%(player.time_remaining+random.randint(5,10))
     html+="</head><body>"
     html+="<header><input id='search'/><button id='searchbutton'>Search YT</button>"
     html+="</header>"
+    yield html
+    html=""
     html+="<main>"
     html+=page
     html+="</main>"
@@ -477,10 +727,10 @@ var details = document.querySelectorAll("details");
 details.forEach((detail) => {
     detail.addEventListener("toggle", function(event) {
     if(detail.dataset.source)
-        fetch(detail.dataset.source).then((response) => response.text()).then((text) => {
+        fetch(detail.dataset.source).then((response) => response.ok ? response.text() : Promise.reject(response)).then((text) => {
             detail.lastChild.innerHTML = text;
             detail.removeAttribute('data-source');
-        });
+        }).catch(response => console.log(response.status,response.statusText));
     });
 });
 var search = document.getElementById('search');
@@ -497,14 +747,14 @@ volume.addEventListener("change", function(event) {
 </script>
 """.replace('\n','')
     html+="</body></html>"
-    return html
+    yield html
 
 
 def _get_ytdlp_info(url, endless=False):
     if endless:
-        ydl_opts = {'extract_flat': 'in_playlist' }
+        ydl_opts = {'extract_flat': 'in_playlist', "quiet": "true" }
     else:
-        ydl_opts = {'extract_flat': 'in_playlist', 'playlistend': 36  }
+        ydl_opts = {'extract_flat': 'in_playlist', "quiet": "true", 'playlistend': 36  }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
     return info
@@ -514,7 +764,7 @@ infolist={}
 def get_ytdlp_info(url, cache, endless=False):
     infolist[url]=cache
     info = None
-    os.makedirs("cache/"+cache.split('/')[0], exist_ok=True)
+    os.makedirs("cache/"+"/".join(cache.split('/')[:-1]), exist_ok=True)
     if os.path.exists("cache/"+cache):
         with(open("cache/"+cache) as f):
             info=json.load(f)
@@ -526,12 +776,24 @@ def get_ytdlp_info(url, cache, endless=False):
             json.dump(info,f, indent="\t")
     return info
 
+screenoff=False
 def mpv_handle_start(event):
+    global screenoff
     os.makedirs("cache/started", exist_ok=True)
     filename = list(filter(lambda x: x['id']==event.data.playlist_entry_id, player.playlist))[0]['filename']
     sponsorblock(filename)
     filename=filename.split('/')[-1]
     open('cache/started/%s.started'%filename, 'a').close()
+
+    if player.vo_configured:
+        if screenoff:
+            player.stop_screensaver="no"
+            os.system("setterm -blank poke")
+            screenoff = False
+    elif not screenoff:
+        player.stop_screensaver="yes"
+        os.system("setterm -blank force")
+        screenoff = True
 
 def mpv_handle_end(event):
     if event.data.reason==0: #EOF
@@ -554,8 +816,12 @@ def mpv_handle_end(event):
                 for ele in tracks:
                     os.remove('cache/started/%s.started'%ele)
                 player.play(find_track(ele))
+        telegram_send_started()
 
+prev_telegram_time=None
 def time_observer(value):
+    global prev_telegram_time
+    global alerted_low_battery
     if value is None:
         return
     for start,end in sponsorblock_times:
@@ -565,6 +831,14 @@ def time_observer(value):
     if player.time_remaining != None and int(player.time_remaining)==90:
         for url in infolist:
             get_ytdlp_info(url,infolist[url])
+    battery = psutil.sensors_battery()
+    if battery.secsleft<player.playtime_remaining and not alerted_low_battery:
+        telegram_bot_send_message_all("\u26A0\U0001FAAB Battery empty in %02d:%02dS! \U0001FAAB\u26A0"%divmod(battery.secsleft, 60))
+        alerted_low_battery = True
+    #if int(value)!=prev_telegram_time:
+    #    if screenoff:
+    #        prev_telegram_time=int(value)
+    #    telegram_bot_process_updates()
 
 
 
@@ -573,7 +847,7 @@ def mpv_handle_play(video):
     if video is None:
         return
     if player is None:
-        player=mpv.MPV(ytdl=True)
+        player=mpv.MPV(ytdl=True, image_display_duration=8, ytdl_format="bestvideo[height<=1080]+bestaudio/best[height<=1080]", input_vo_keyboard=True, osc=True, alpha="blend")#stop_screensaver=False)
 
     @player.event_callback('start-file')
     def start(event):
@@ -588,6 +862,7 @@ def mpv_handle_play(video):
         time_observer(value)
 
     videopath="https://youtu.be/"+video
+    get_info(videopath) #prevents bad paths from entering the queue
     playlist=list(map(lambda x: x['filename'],player.playlist))
     if len(player.playlist) == 0:
         player.play(videopath)
@@ -597,13 +872,15 @@ def mpv_handle_play(video):
         player.play(videopath)
     else:
         player.playlist_append(videopath)
+    telegram_send_started()
 
-def mpv_handle_play_file(path):
+def mpv_handle_play_file(path, by_telegram=False):
+    get_info(path) #prevents bad paths from entering the queue
     global player
     if path is None:
         return
     if player is None:
-        player=mpv.MPV(ytdl=True)
+        player=mpv.MPV(ytdl=True, image_display_duration=8, ytdl_format="bestvideo[height<=1080]+bestaudio/best[height<=1080]", input_vo_keyboard=True, osc=True, alpha="blend")
 
     @player.event_callback('start-file')
     def start(event):
@@ -626,6 +903,8 @@ def mpv_handle_play_file(path):
         player.play(path)
     else:
         player.playlist_append(path)
+    if not by_telegram:
+        telegram_send_started()
 
 def mpv_handle_pause():
     global player
@@ -775,7 +1054,7 @@ def music_shuffle():
     shuffle = not shuffle
     global player
     if player is None:
-        player=mpv.MPV(ytdl=True)
+        player=mpv.MPV(ytdl=True, image_display_duration=8, ytdl_format="bestvideo[height<=1080]+bestaudio/best[height<=1080]", input_vo_keyboard=True, osc=True, alpha="blend")
 
     @player.event_callback('start-file')
     def start(event):
@@ -796,6 +1075,7 @@ def music_shuffle():
             for ele in tracks:
                 os.remove('cache/started/%s.started'%ele)
             player.play(find_track(ele))
+    telegram_send_started()
     return redirect("/music")
 
 @app.route("/music/artist/")
@@ -941,11 +1221,12 @@ def generate_home_page(index):
                     continue
                 info = get_ytdlp_info("https://www.youtube.com/@%s/videos"%user, "user/%s.json"%user)
                 for i, ment in enumerate(info['entries']):
+                    if 'availability' in ment and ment['availability'] not in ('unlisted','public'):
+                        continue
                     ment['channel']=info['channel']
                     ment['channel_id']=info['channel_id']
                     ment['uploader']=info['uploader']
                     ment['uploader_id']=info['uploader_id']
-
                     pages[i].append(ment)
         html+='<section class="videogrid">'
         for page in pages:
@@ -996,7 +1277,38 @@ def get_ip():
         s.close()
     return IP
 
+other_thread=None
+other_thread_stop=False
+
+def quit(*args, **kwargs):
+    global other_thread_stop
+    other_thread_stop = True
+    os.system("setterm -blank poke")
+    telegram_bot_send_message_all("Goodbye and 'till next time!")
+    if other_thread:
+        other_thread.join()
+    if shutdown:
+        os.system("shutdown 0")
+    sys.exit(0)
+
 if __name__ == "__main__":
+    import signal
+    os.system("setterm -cursor off;setterm -clear;")
     ip=get_ip()
+    home_url = "%s:5968/"%ip
+    signal.signal(signal.SIGINT, quit)
+    signal.signal(signal.SIGTERM, quit)
     print("connect to %s:5968"%ip)
+    def bot_updates():
+        while True:
+          try:
+            telegram_bot_process_updates()
+            time.sleep(1)
+            if other_thread_stop:
+                break
+          except Exception as e:
+            print(e)
+    other_thread = threading.Thread(target=bot_updates)
+    other_thread.start()
+    telegram_bot_send_message_all("Good morning my ladies and gents.\n\nTo play a file please visit http://%s or send a file or link!"%home_url)
     app.run(host=ip, port=5968)
