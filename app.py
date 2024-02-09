@@ -14,8 +14,8 @@ import threading
 import logging
 import sys
 import psutil
-#log = logging.getLogger('werkzeug')
-#log.setLevel(logging.ERROR)
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
 
 MUSIC_FOLDER="/home/mii/Music/Music"
 
@@ -1221,7 +1221,7 @@ def generate_home_page(index):
                     continue
                 info = get_ytdlp_info("https://www.youtube.com/@%s/videos"%user, "user/%s.json"%user)
                 for i, ment in enumerate(info['entries']):
-                    if 'availability' in ment and ment['availability'] not in ('unlisted','public'):
+                    if 'availability' in ment and ment['availability'] is not None and ment['availability'] not in ('unlisted','public'):
                         continue
                     ment['channel']=info['channel']
                     ment['channel_id']=info['channel_id']
