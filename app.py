@@ -373,6 +373,12 @@ def telegram_bot_process_updates():
                 if text=="/play":
                     player.play = True
                     continue
+                if text=="/oofvideo":
+                    mpv_handle_play_file(
+                        "https://www.youtube.com/watch?v=0twDETh6QaI",
+                        True)
+                    has_updates=True
+                    continue
                 if text=="/shutdown":
                     shutdown = True
                     quit()
