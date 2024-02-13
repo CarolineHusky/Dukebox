@@ -10,6 +10,7 @@ import hashlib
 import itertools
 import random
 import urllib, hashlib, re
+import urllib.parse
 import threading
 import logging
 import sys
@@ -280,6 +281,14 @@ telegram_chats = set()
 home_url = ""
 shutdown = False
 
+
+def telegram_bot_send_file(chat, filename):
+    import requests
+    url="https://api.telegram.org/bot"+telegram_token+"/sendPhoto"
+    response=requests.post(url, data={'chat_id': chat}, files={'photo': open(filename,"rb")})
+    return response
+
+
 def telegram_bot_execute(command, data=None, method=None):
     try:
         headers={}
@@ -358,6 +367,15 @@ def telegram_bot_process_updates():
                 if text.startswith("/vol"):
                     player.volume = max(0, min(100,int(text.split(" ")[-1])))
                     continue
+                if text=="/screenshot":
+                    os.makedirs(os.path.join("cache","screenshot"), exist_ok=True)
+                    filename=list(map(lambda x: get_info(x['filename']),itertools.dropwhile(lambda x: 'current' not in x or not x['current'], player.playlist)))[0]
+                    name=filename['title']
+                    print(name)
+                    filename=os.path.join("cache","screenshot","%s-%.2f.png"%(name,player.time_pos))
+                    player.screenshot_to_file(filename)
+                    telegram_bot_send_file(update["chat"]["id"],filename)
+                    continue
                 if text=="/shuffle":
                     shuffle = True
                     continue
@@ -368,10 +386,26 @@ def telegram_bot_process_updates():
                     player.playlist_next()
                     continue
                 if text=="/pause":
-                    player.play = False
+                    player.pause = True
                     continue
                 if text=="/play":
-                    player.play = True
+                    player.pause = False
+                    continue
+                if text=="." and player.pause:
+                    player.frame_step()
+                    continue
+                if text=="," and player.pause:
+                    player.frame_back_step()
+                    continue
+                if text=="m" and player.pause:
+                    player.seek(1)
+                    continue
+                if text=="n" and player.pause:
+                    player.seek(-1)
+                    continue
+                if text.startswith("/seek"):
+                    seekpos= max(0, min(100,int(text.split(" ")[-1])))
+                    player.seek(seekpos,"absolute-percent")
                     continue
                 if text=="/oofvideo":
                     mpv_handle_play_file(
@@ -618,7 +652,7 @@ def generate_description(info, uploader=None, clickable=False):
     elif os.path.exists('cache/started/%s.started'%info['id']):
         html+='[Started] '
     html+="<strong>%s</strong>"%title
-    if uploader is None:
+    if uploader is None and 'uploader' in info:
         if 'uploader_id' in info and info['uploader_id'] is not None:
             html+=' <a href="/user/%s">%s</a>'%(info['uploader_id'][1:],info['uploader'])
         elif 'channel_id' in info and info['channel_id'] is not None:
@@ -688,6 +722,9 @@ def get_info(videourl):
     #videoid=videourl.lstrip("https://www.youtube.com/watch?v=")
     try:
         info = get_ytdlp_info(videourl, "video/%s.json"%videoid)
+        if not videourl.startswith("https://www.youtu") and not videourl.startswith('https://youtu'):
+            print(videourl)
+            del info['uploader']
     except Exception:
         raise
     return info
@@ -838,7 +875,7 @@ def time_observer(value):
         for url in infolist:
             get_ytdlp_info(url,infolist[url])
     battery = psutil.sensors_battery()
-    if battery.secsleft<player.playtime_remaining and not alerted_low_battery:
+    if player is not None and player.playtime_remaining is not None and battery.power_plugged!=True and battery.secsleft<player.playtime_remaining and not alerted_low_battery:
         telegram_bot_send_message_all("\u26A0\U0001FAAB Battery empty in %02d:%02dS! \U0001FAAB\u26A0"%divmod(battery.secsleft, 60))
         alerted_low_battery = True
     #if int(value)!=prev_telegram_time:
@@ -1291,8 +1328,8 @@ def quit(*args, **kwargs):
     other_thread_stop = True
     os.system("setterm -blank poke")
     telegram_bot_send_message_all("Goodbye and 'till next time!")
-    if other_thread:
-        other_thread.join()
+    #if other_thread:
+    #    other_thread.terminate()
     if shutdown:
         os.system("shutdown 0")
     sys.exit(0)
