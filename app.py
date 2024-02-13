@@ -339,6 +339,8 @@ def telegram_bot_download_file(file_id, destination=None):
     file_path=file_info['result']['file_path']
     if destination is None:
         destination=file_info['result']['file_path'].split('/')[-1]
+    if not destination.endswith("."+file_info['result']['file_path'].split(".")[-1]):
+        destination+="."+file_info['result']['file_path'].split(".")[-1]
     os.makedirs(os.path.join("cache","telegram"), exist_ok=True)
     destination=os.path.join("cache","telegram",destination)
     if os.path.exists(destination):
@@ -445,11 +447,13 @@ def telegram_bot_process_updates():
                         download_file=telegram_bot_download_file(update[ele]["file_id"],update[ele]["file_name"])
                     elif "set_name" in update[ele] and "emoji" in update[ele]:
                         download_file=telegram_bot_download_file(update[ele]["file_id"],update[ele]["set_name"]+" "+update[ele]["emoji"])
+                    elif "file_unique_id" in update[ele]:
+                        download_file=telegram_bot_download_file(update[ele]["file_id"],update[ele]["file_unique_id"])
                     else:
                         download_file=telegram_bot_download_file(update[ele]["file_id"])
                     mpv_handle_play_file(download_file, True)
                     has_updates=True
-                    print(download_file)
+                    #print(download_file)
                 except ValueError:
                     telegram_bot_send_message("Sorry, this file is too big.\nThese simple bots support files up to 20MB...",update["chat"]["id"])
             elif ele=="photo":
@@ -460,9 +464,12 @@ def telegram_bot_process_updates():
                     if photo['height']<1080:
                         break
                     bestphoto=photo
-                download_file=telegram_bot_download_file(bestphoto['file_id'])
+                if "file_unique_id" in bestphoto:
+                    download_file=telegram_bot_download_file(bestphoto["file_id"],bestphoto["file_unique_id"])
+                else:
+                    download_file=telegram_bot_download_file(bestphoto['file_id'])
                 mpv_handle_play_file(download_file, True)
-                print(download_file)
+                #print(download_file)
                 has_updates=True
     if has_updates:
         telegram_send_started()
@@ -491,10 +498,10 @@ def telegram_send_started():
     playlist=list(map(lambda x: get_info(x['filename']),itertools.dropwhile(lambda x: 'current' not in x or not x['current'], player.playlist)))
     text=""
     battery = psutil.sensors_battery()
-    if battery.power_plugged==True:
+    if battery.power_plugged==True and battery.percent<99:
         text+="\u26A1 %02d%% "%battery.percent
         alerted_low_battery = False
-    else:
+    elif battery.percent<36:
         text+="\U0001FAAB %02d%% "%battery.percent
     entities=[]
     for index,entry in enumerate(playlist):
@@ -723,7 +730,6 @@ def get_info(videourl):
     try:
         info = get_ytdlp_info(videourl, "video/%s.json"%videoid)
         if not videourl.startswith("https://www.youtu") and not videourl.startswith('https://youtu'):
-            print(videourl)
             del info['uploader']
     except Exception:
         raise
