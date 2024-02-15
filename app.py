@@ -360,6 +360,7 @@ def telegram_bot_download_file(file_id, destination=None):
 def telegram_bot_process_updates():
     global shuffle
     global shutdown
+    global porny
     has_updates=False
     for update in telegram_bot_get_updates():
         for ele in update:
@@ -380,18 +381,42 @@ def telegram_bot_process_updates():
                     continue
                 if text=="/shuffle":
                     shuffle = True
+                    has_updates=True
+                    perform_shuffle()
                     continue
                 if text=="/noshuffle":
                     shuffle = False
+                    has_updates=True
                     continue
                 if text=="/next":
+                    create_player()
                     player.playlist_next()
                     continue
                 if text=="/pause":
+                    create_player()
                     player.pause = True
                     continue
                 if text=="/play":
+                    create_player()
                     player.pause = False
+                    if shuffle:
+                        perform_shuffle()
+                    continue
+                if text=="/porny":
+                    porny = True
+                    text="Porny mode engaged..."
+                    length=len(text.encode('utf-16-le'))//2
+                    telegram_bot_send_message(text,update["chat"]["id"], [{"type": "italic", "offset": 0, "length": length}])
+                    if not shuffle:
+                        shuffle=True
+                        create_player()
+                        perform_shuffle()
+                    continue
+                if text=="/normie":
+                    porny = False
+                    text="Porny mode disengaged..."
+                    length=len(text.encode('utf-16-le'))//2
+                    telegram_bot_send_message(text,update["chat"]["id"], [{"type": "italic", "offset": 0, "length": length}])
                     continue
                 if text=="." and player.pause:
                     player.frame_step()
@@ -402,7 +427,7 @@ def telegram_bot_process_updates():
                 if text=="m" and player.pause:
                     player.seek(1)
                     continue
-                if text=="n" and player.pause:
+                if text=="z" and player.pause:
                     player.seek(-1)
                     continue
                 if text.startswith("/seek"):
@@ -469,30 +494,29 @@ def telegram_bot_process_updates():
                 else:
                     download_file=telegram_bot_download_file(bestphoto['file_id'])
                 mpv_handle_play_file(download_file, True)
-                #print(download_file)
                 has_updates=True
     if has_updates:
-        telegram_send_started()
+        telegram_send_started(False)
 
 
 
-def telegram_bot_send_message(text, chat, entries=None):
+def telegram_bot_send_message(text, chat, entries=None, silent=False):
     if entries is None:
-        telegram_bot_execute("sendMessage", {"chat_id": chat, "text": text})
+        telegram_bot_execute("sendMessage", {"chat_id": chat, "text": text, "disable_notification": silent})
     else:
-        telegram_bot_execute("sendMessage", {"chat_id": chat, "text": text, "entities": entries})
-def telegram_bot_send_message_all(text, entries=None):
+        telegram_bot_execute("sendMessage", {"chat_id": chat, "text": text, "entities": entries, "disable_notification": silent})
+def telegram_bot_send_message_all(text, entries=None, silent=True):
     global telegram_chats
     if telegram_chats==[] and os.path.exists(os.path.join("cache","telegram_chats.txt")):
         with open(os.path.join("cache","telegram_chats.txt")) as f:
             telegram_chats = f.read().split("\n")
     for chat in telegram_chats:
         if chat!="":
-            telegram_bot_send_message(text,chat, entries)
+            telegram_bot_send_message(text,chat, entries, silent)
 
 current_telegram_message = None
 alerted_low_battery = False
-def telegram_send_started():
+def telegram_send_started(silent=True):
     global current_telegram_message
     global alerted_low_battery
     playlist=list(map(lambda x: get_info(x['filename']),itertools.dropwhile(lambda x: 'current' not in x or not x['current'], player.playlist)))
@@ -543,10 +567,7 @@ def telegram_send_started():
     length=len(text.encode('utf-16-le'))//2-offset
     entities.append({"type": "url", "offset": offset, "length": length})
     text+=" or send a file or link!"
-
-
-
-    telegram_bot_send_message_all(text, entities)
+    telegram_bot_send_message_all(text, entities, silent)
 
 
 sponsorblock_times=[]
@@ -720,7 +741,7 @@ def get_info(videourl):
     elif videourl.startswith(os.path.join("cache","telegram")):
         name = videourl.split("/")[-1]
         return {'title': name, 'id': videourl}
-
+    videoid=""
     for e in extractor.list_extractor_classes():
         if e.working() and e.suitable(videourl) and e.IE_NAME != "generic":
             videoid=e.IE_NAME.replace(":","_").lower()+"/"+e.get_temp_id(videourl).replace("/","-")
@@ -853,19 +874,7 @@ def mpv_handle_end(event):
         filename = filename[0]['filename']
         filename=filename.split('/')[-1]
         open('cache/watched/%s.watched'%filename, 'a').close()
-        if player.playlist[-1]['id']==event.data.playlist_entry_id and shuffle and not player.pause:
-            played_files=set(os.listdir('cache/started'))
-            tracks = list(map(lambda x: x[0],list_tracks()))
-            random.shuffle(tracks)
-            for ele in tracks:
-                if not os.path.exists('cache/started/%s.started'%ele):
-                    player.play(find_track(ele))
-                    break
-            else:
-                for ele in tracks:
-                    os.remove('cache/started/%s.started'%ele)
-                player.play(find_track(ele))
-        telegram_send_started()
+        perform_shuffle()
 
 prev_telegram_time=None
 def time_observer(value):
@@ -884,10 +893,6 @@ def time_observer(value):
     if player is not None and player.playtime_remaining is not None and battery.power_plugged!=True and battery.secsleft<player.playtime_remaining and not alerted_low_battery:
         telegram_bot_send_message_all("\u26A0\U0001FAAB Battery empty in %02d:%02dS! \U0001FAAB\u26A0"%divmod(battery.secsleft, 60))
         alerted_low_battery = True
-    #if int(value)!=prev_telegram_time:
-    #    if screenoff:
-    #        prev_telegram_time=int(value)
-    #    telegram_bot_process_updates()
 
 
 
@@ -895,20 +900,7 @@ def mpv_handle_play(video):
     global player
     if video is None:
         return
-    if player is None:
-        player=mpv.MPV(ytdl=True, image_display_duration=8, ytdl_format="bestvideo[height<=1080]+bestaudio/best[height<=1080]", input_vo_keyboard=True, osc=True, alpha="blend")#stop_screensaver=False)
-
-    @player.event_callback('start-file')
-    def start(event):
-        mpv_handle_start(event)
-
-    @player.event_callback('end-file')
-    def end(event):
-        mpv_handle_end(event)
-
-    @player.property_observer('time-pos')
-    def observe_time(_name, value):
-        time_observer(value)
+    create_player()
 
     videopath="https://youtu.be/"+video
     get_info(videopath) #prevents bad paths from entering the queue
@@ -923,11 +915,8 @@ def mpv_handle_play(video):
         player.playlist_append(videopath)
     telegram_send_started()
 
-def mpv_handle_play_file(path, by_telegram=False):
-    get_info(path) #prevents bad paths from entering the queue
+def create_player():
     global player
-    if path is None:
-        return
     if player is None:
         player=mpv.MPV(ytdl=True, image_display_duration=8, ytdl_format="bestvideo[height<=1080]+bestaudio/best[height<=1080]", input_vo_keyboard=True, osc=True, alpha="blend")
 
@@ -942,6 +931,10 @@ def mpv_handle_play_file(path, by_telegram=False):
     @player.property_observer('time-pos')
     def observe_time(_name, value):
         time_observer(value)
+
+def mpv_handle_play_file(path, by_telegram=False):
+    get_info(path) #prevents bad paths from entering the queue
+    create_player()
 
     playlist=list(map(lambda x: x['filename'],player.playlist))
     if len(player.playlist) == 0:
@@ -1093,6 +1086,34 @@ def generate_artist_page(artist):
         html+="</tbody></table>"
     return html
 
+porny=False
+def perform_shuffle():
+    if not shuffle:
+        return
+    create_player()
+    if not any(filter(lambda x:'current' in x and x['current'], player.playlist)):
+        played_files=set(os.listdir('cache/started'))
+        if porny:
+            tracks = list(os.listdir(os.path.join("cache", "telegram")))
+        else:
+            tracks = list(map(lambda x: x[0],list_tracks()))
+        random.shuffle(tracks)
+        for ele in tracks:
+            if not os.path.exists('cache/started/%s.started'%ele):
+                if porny:
+                    player.play(os.path.join("cache", "telegram",ele))
+                else:
+                    player.play(find_track(ele))
+                break
+        else:
+            for ele in tracks:
+                os.remove('cache/started/%s.started'%ele)
+            if porny:
+                player.play(os.path.join("cache","telegram",ele))
+            else:
+                player.play(find_track(ele))
+        telegram_send_started()
+
 @app.route("/music/")
 def music():
     return generate_page(generate_music_page(), "Music")
@@ -1101,30 +1122,8 @@ def music():
 def music_shuffle():
     global shuffle
     shuffle = not shuffle
-    global player
-    if player is None:
-        player=mpv.MPV(ytdl=True, image_display_duration=8, ytdl_format="bestvideo[height<=1080]+bestaudio/best[height<=1080]", input_vo_keyboard=True, osc=True, alpha="blend")
-
-    @player.event_callback('start-file')
-    def start(event):
-        mpv_handle_start(event)
-
-    @player.event_callback('end-file')
-    def end(event):
-        mpv_handle_end(event)
-    if not any(filter(lambda x:'current' in x and x['current'], player.playlist)):
-        played_files=set(os.listdir('cache/started'))
-        tracks = list(map(lambda x: x[0],list_tracks()))
-        random.shuffle(tracks)
-        for ele in tracks:
-            if not os.path.exists('cache/started/%s.started'%ele):
-                player.play(find_track(ele))
-                break
-        else:
-            for ele in tracks:
-                os.remove('cache/started/%s.started'%ele)
-            player.play(find_track(ele))
-    telegram_send_started()
+    create_player()
+    perform_shuffle()
     return redirect("/music")
 
 @app.route("/music/artist/")
@@ -1235,6 +1234,14 @@ def channel(name, videoid=None):
     info = get_ytdlp_info("https://www.youtube.com/channel/%s/videos"%name, "channel/%s.json"%name)
     return generate_page(generate_channelpage(info), info['channel'])
 
+@app.route("/channel/<name>/endless")
+def channel_endless(name):
+    if '..' in name or '/' in name:
+        return
+    name=name.lower()
+    info = get_ytdlp_info("https://www.youtube.com/channel/%s/videos"%name, "channel/%s.json"%name, True)
+    return generate_page(generate_channelpage(info, True), info['channel'])
+
 @app.route("/search/<name>/play/<video>")
 def search_play(name, video):
     mpv_handle_play(video)
@@ -1245,13 +1252,25 @@ def search_pause(name):
     mpv_handle_pause()
     return redirect('/search/%s/'%name)
 
-@app.route("/search/<name>/")
+@app.route("/search/<path:name>/")
 def search(name):
-    if '..' in name or '/' in name:
-        return
+    full_name=name
+    if request.query_string:
+        full_name+="?"+request.query_string.decode()
+    print(full_name)
+    for e in extractor.list_extractor_classes():
+        if e.working() and e.suitable(full_name) and e.IE_NAME != "generic":
+            try:
+                mpv_handle_play_file(full_name, True)
+                return redirect('/')
+            except Exception as e:
+                pass
+    #if '..' in name or '/' in name:
+    #    return
     hashname = int.from_bytes(hashlib.sha256(name.encode('utf-8')).digest()[:8], byteorder='big', signed=True)
     info = get_ytdlp_info("ytsearch12:%s"%name, "search/%16x.json"%hashname)
     songsearch = sorted(set(filter(lambda x: (x[1] is not None and name.lower() in x[1].lower()) or (x[2] is not None and name.lower() in x[2].lower()) or name.lower() in x[-1].lower(), list_tracks())), key=lambda x: list(map(lambda x: "" if x is None else x, x[1:])))
+    name=name.replace("<","&gt;").replace("&","&amp;")
     return generate_page(generate_searchpage(info, name, songsearch), "Searched for: %s"%name)
 
 def generate_home_page(index):
