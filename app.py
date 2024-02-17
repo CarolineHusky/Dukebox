@@ -15,10 +15,16 @@ import threading
 import logging
 import sys
 import psutil
-log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR)
+import traceback
+
+
+blank=False
+if blank:
+    log = logging.getLogger('werkzeug')
+    log.setLevel(logging.ERROR)
 
 MUSIC_FOLDER="/home/mii/Music/Music"
+
 
 app = Flask(__name__)
 
@@ -371,7 +377,8 @@ def telegram_bot_process_updates():
         for ele in update:
             if ele=="text":
                 text = update['text']
-                print(text)
+                if not blank:
+                    print("[telegram bot] "+text)
                 if text.startswith("/vol"):
                     player.volume = max(0, min(100,int(text.split(" ")[-1])))
                     continue
@@ -434,6 +441,7 @@ def telegram_bot_process_updates():
                         shuffle=True
                         create_player()
                         perform_shuffle()
+                    continue
                 if text=="/normie":
                     porny = False
                     text="Porny mode disengaged..."
@@ -877,7 +885,8 @@ def mpv_handle_start(event):
     if player.vo_configured:
         if screenoff:
             player.stop_screensaver="no"
-            os.system("setterm -blank poke")
+            if blank:
+                os.system("setterm -blank poke")
             screenoff = False
     elif not screenoff:
         player.stop_screensaver="yes"
@@ -936,7 +945,8 @@ def mpv_handle_play(video):
 
 def create_player():
     global player
-    os.system("setterm -cursor off;setterm -clear;")
+    if blank:
+        os.system("setterm -cursor off;setterm -clear;")
     if player is None:
         player=mpv.MPV(ytdl=True, image_display_duration=8, ytdl_format="bestvideo[height<=1080]+bestaudio/best[height<=1080]", input_vo_keyboard=True, osc=True, alpha="blend")
 
@@ -1123,7 +1133,7 @@ def perform_shuffle():
                         for f in files:
                             if f[0]==".":
                                 continue
-                            if f.split(".")[-1].lower() not in ('.mp4', '.jpg', '.jpeg', '.png', '.gif'):
+                            if f.split(".")[-1].lower() not in ('mp4', 'jpg', 'jpeg', 'png', 'gif'):
                                 continue
                             tracks.append(os.path.join(root,f))
         else:
@@ -1149,7 +1159,7 @@ def perform_shuffle():
                     player.play(ele)
             else:
                 player.play(find_track(ele))
-        #telegram_send_started()
+        telegram_send_started()
 
 @app.route("/music/")
 def music():
@@ -1388,7 +1398,8 @@ other_thread_stop=False
 def quit(*args, **kwargs):
     global other_thread_stop
     other_thread_stop = True
-    os.system("setterm -blank poke")
+    if blank:
+        os.system("setterm -blank poke")
     telegram_bot_send_message_all("Goodbye and 'till next time!")
     #if other_thread:
     #    other_thread.terminate()
@@ -1398,7 +1409,8 @@ def quit(*args, **kwargs):
 
 if __name__ == "__main__":
     import signal
-    os.system("setterm -cursor off;setterm -clear;")
+    if blank:
+        os.system("setterm -cursor off;setterm -clear;")
     ip=get_ip()
     home_url = "%s:5968/"%ip
     signal.signal(signal.SIGINT, quit)
@@ -1412,7 +1424,7 @@ if __name__ == "__main__":
             if other_thread_stop:
                 break
           except Exception as e:
-            print(e)
+            traceback.format_exc()
     other_thread = threading.Thread(target=bot_updates)
     other_thread.start()
     telegram_bot_send_message_all("Good morning my ladies and gents.\n\nTo play a file please visit http://%s or send a file or link!"%home_url)
