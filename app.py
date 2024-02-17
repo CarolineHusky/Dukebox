@@ -433,7 +433,7 @@ def telegram_bot_process_updates():
                     porny = True
                     pornfolder.append(text)
                     if len(pornfolder)>1:
-                        text="%s modes engaged..."%", ".join(filter(lambda x: x[1:].lower(),pornfolder)).capitalize()
+                        text="%s modes engaged..."%", ".join(list(map(lambda x: x[1:].lower(),pornfolder))).capitalize()
                     else:
                         text="%s mode engaged..."%text[1:].capitalize()
 
