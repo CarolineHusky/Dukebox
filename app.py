@@ -281,6 +281,10 @@ telegram_chats = set()
 home_url = ""
 shutdown = False
 
+commands={}
+if os.path.exists("commands.json"):
+    with open("commands.json") as f:
+        commands=json.load(f)
 
 def telegram_bot_send_file(chat, filename):
     import requests
@@ -356,6 +360,7 @@ def telegram_bot_download_file(file_id, destination=None):
         print(body)
         raise
 
+pornfolder = []
 
 def telegram_bot_process_updates():
     global shuffle
@@ -412,6 +417,23 @@ def telegram_bot_process_updates():
                         create_player()
                         perform_shuffle()
                     continue
+                if text in commands:
+                    if text in pornfolder:
+                        pornfolder.remove(text)
+                        text="%s mode disengaged..."%text[1:].capitalize()
+                        length=len(text.encode('utf-16-le'))//2
+                        telegram_bot_send_message(text,update["chat"]["id"], [{"type": "italic", "offset": 0, "length": length}])
+                        continue
+                    porny = True
+                    pornfolder.append(text)
+                    text="%s mode engaged..."%text[1:].capitalize()
+
+                    length=len(text.encode('utf-16-le'))//2
+                    telegram_bot_send_message(text,update["chat"]["id"], [{"type": "italic", "offset": 0, "length": length}])
+                    if not shuffle:
+                        shuffle=True
+                        create_player()
+                        perform_shuffle()
                 if text=="/normie":
                     porny = False
                     text="Porny mode disengaged..."
@@ -735,10 +757,7 @@ def generate_searchpage(info,searchterm, songsearch):
 
 
 def get_info(videourl):
-    if videourl.startswith(MUSIC_FOLDER+"/"):
-        name = videourl.split("/")[-1]
-        return {'title': name, 'id': videourl}
-    elif videourl.startswith(os.path.join("cache","telegram")):
+    if not videourl.startswith("http"):
         name = videourl.split("/")[-1]
         return {'title': name, 'id': videourl}
     videoid=""
@@ -917,6 +936,7 @@ def mpv_handle_play(video):
 
 def create_player():
     global player
+    os.system("setterm -cursor off;setterm -clear;")
     if player is None:
         player=mpv.MPV(ytdl=True, image_display_duration=8, ytdl_format="bestvideo[height<=1080]+bestaudio/best[height<=1080]", input_vo_keyboard=True, osc=True, alpha="blend")
 
@@ -1094,25 +1114,42 @@ def perform_shuffle():
     if not any(filter(lambda x:'current' in x and x['current'], player.playlist)):
         played_files=set(os.listdir('cache/started'))
         if porny:
-            tracks = list(os.listdir(os.path.join("cache", "telegram")))
+            if pornfolder==[]:
+                tracks = list(os.listdir(os.path.join("cache", "telegram")))
+            else:
+                tracks = []
+                for folder in pornfolder:
+                    for root, dirs, files in os.walk(commands[folder], topdown=False):
+                        for f in files:
+                            if f[0]==".":
+                                continue
+                            if f.split(".")[-1].lower() not in ('.mp4', '.jpg', '.jpeg', '.png', '.gif'):
+                                continue
+                            tracks.append(os.path.join(root,f))
         else:
             tracks = list(map(lambda x: x[0],list_tracks()))
         random.shuffle(tracks)
         for ele in tracks:
-            if not os.path.exists('cache/started/%s.started'%ele):
+            if not os.path.exists('cache/started/%s.started'%ele.split("/")[-1]):
                 if porny:
-                    player.play(os.path.join("cache", "telegram",ele))
+                    if pornfolder==[]:
+                        player.play(os.path.join("cache", "telegram",ele))
+                    else:
+                        player.play(ele)
                 else:
                     player.play(find_track(ele))
                 break
         else:
             for ele in tracks:
-                os.remove('cache/started/%s.started'%ele)
+                os.remove('cache/started/%s.started'%ele.split("/")[-1])
             if porny:
-                player.play(os.path.join("cache","telegram",ele))
+                if pornfolder==[]:
+                    player.play(os.path.join("cache","telegram",ele))
+                else:
+                    player.play(ele)
             else:
                 player.play(find_track(ele))
-        telegram_send_started()
+        #telegram_send_started()
 
 @app.route("/music/")
 def music():
