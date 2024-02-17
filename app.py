@@ -18,7 +18,7 @@ import psutil
 import traceback
 
 
-blank=False
+blank=True
 if blank:
     log = logging.getLogger('werkzeug')
     log.setLevel(logging.ERROR)
@@ -386,7 +386,6 @@ def telegram_bot_process_updates():
                     os.makedirs(os.path.join("cache","screenshot"), exist_ok=True)
                     filename=list(map(lambda x: get_info(x['filename']),itertools.dropwhile(lambda x: 'current' not in x or not x['current'], player.playlist)))[0]
                     name=filename['title']
-                    print(name)
                     filename=os.path.join("cache","screenshot","%s-%.2f.png"%(name,player.time_pos))
                     player.screenshot_to_file(filename)
                     telegram_bot_send_file(update["chat"]["id"],filename)
@@ -433,7 +432,10 @@ def telegram_bot_process_updates():
                         continue
                     porny = True
                     pornfolder.append(text)
-                    text="%s mode engaged..."%text[1:].capitalize()
+                    if len(pornfolder)>1:
+                        text="%s modes engaged..."%", ".join(filter(lambda x: x[1:].lower(),pornfolder)).capitalize()
+                    else:
+                        text="%s mode engaged..."%text[1:].capitalize()
 
                     length=len(text.encode('utf-16-le'))//2
                     telegram_bot_send_message(text,update["chat"]["id"], [{"type": "italic", "offset": 0, "length": length}])
@@ -567,18 +569,22 @@ def telegram_send_started(silent=True):
                 text+="\nUp next:\n"
             length=len(text.encode('utf-16-le'))//2-offset
             entities.append({"type": "bold", "offset": offset, "length": length})
-        if 'uploader' in entry:
+        if 'uploader' in entry or 'tumblr_url' in entry:
             offset=len(text.encode('utf-16-le'))//2
-            text+=entry['uploader']
-            length=len(text.encode('utf-16-le'))//2-offset
-            if 'uploader_id' in entry:
-                url = home_url + "user/%s"%entry['uploader_id'][1:]
-                entities.append({"type": "text_link", "offset": offset, "length": length, "url": url})
-            elif 'channel_id' in entry:
-                url = home_url + "channel/%s"%entry['channel_id']
-                entities.append({"type": "text_link", "offset": offset, "length": length, "url": url})
-            text+=": "
+            if 'tumblr_url' not in entry:
+                text+=entry['uploader']
+                length=len(text.encode('utf-16-le'))//2-offset
+                if 'uploader_id' in entry:
+                    url = home_url + "user/%s"%entry['uploader_id'][1:]
+                    entities.append({"type": "text_link", "offset": offset, "length": length, "url": url})
+                elif 'channel_id' in entry:
+                    url = home_url + "channel/%s"%entry['channel_id']
+                    entities.append({"type": "text_link", "offset": offset, "length": length, "url": url})
+                text+=": "
         text+="%s"%entry['title'].replace("@","\uFF20")
+        if 'tumblr_url' in entry:
+            length=len(text.encode('utf-16-le'))//2-offset
+            entities.append({"type": "text_link", "offset": offset, "length": length, "url": entry['tumblr_url']})
         text+="\n"
     if text=="":
         return
@@ -767,6 +773,11 @@ def generate_searchpage(info,searchterm, songsearch):
 def get_info(videourl):
     if not videourl.startswith("http"):
         name = videourl.split("/")[-1]
+        if videourl.split("/")[-2].lower() == "tumblr":
+            breakdown=name.split(".")[0].split("_")
+            if len(breakdown)>1:
+                tumblr_url="https://www.tumblr.com/%s/%s"%(breakdown[0],breakdown[1])
+                return {'title': name, 'id': videourl, 'tumblr_url': tumblr_url}
         return {'title': name, 'id': videourl}
     videoid=""
     for e in extractor.list_extractor_classes():
@@ -914,13 +925,14 @@ def time_observer(value):
         if start<=value<end:
             print("Sponsorblock skipped from %f to %f"%(value,end))
             player.time_pos = end
-    if player.time_remaining != None and int(player.time_remaining)==90:
-        for url in infolist:
-            get_ytdlp_info(url,infolist[url])
-    battery = psutil.sensors_battery()
-    if player is not None and player.playtime_remaining is not None and battery.power_plugged!=True and battery.secsleft<player.playtime_remaining and not alerted_low_battery:
-        telegram_bot_send_message_all("\u26A0\U0001FAAB Battery empty in %02d:%02dS! \U0001FAAB\u26A0"%divmod(battery.secsleft, 60))
-        alerted_low_battery = True
+    if player.time_remaining != None:
+        if player.time_remaining in range(90,91):
+            for url in infolist:
+                get_ytdlp_info(url,infolist[url])
+        battery = psutil.sensors_battery()
+        if player is not None and player.playtime_remaining is not None and battery.power_plugged!=True and battery.secsleft<player.playtime_remaining and not alerted_low_battery:
+            telegram_bot_send_message_all("\u26A0\U0001FAAB Battery empty in %02d:%02dS! \U0001FAAB\u26A0"%divmod(battery.secsleft, 60))
+            alerted_low_battery = True
 
 
 
@@ -1117,49 +1129,49 @@ def generate_artist_page(artist):
     return html
 
 porny=False
-def perform_shuffle():
+def perform_shuffle(inner=False):
     if not shuffle:
         return
     create_player()
-    if not any(filter(lambda x:'current' in x and x['current'], player.playlist)):
-        played_files=set(os.listdir('cache/started'))
-        if porny:
-            if pornfolder==[]:
-                tracks = list(os.listdir(os.path.join("cache", "telegram")))
-            else:
-                tracks = []
-                for folder in pornfolder:
-                    for root, dirs, files in os.walk(commands[folder], topdown=False):
-                        for f in files:
-                            if f[0]==".":
-                                continue
-                            if f.split(".")[-1].lower() not in ('mp4', 'jpg', 'jpeg', 'png', 'gif'):
-                                continue
-                            tracks.append(os.path.join(root,f))
+    if len(player.playlist)>1 and len(list(itertools.dropwhile(lambda x: 'current' not in x or not x['current'], player.playlist)))>1:
+        return
+    #if not any(filter(lambda x:'current' in x and x['current'], player.playlist)):
+    played_files=set(os.listdir('cache/started'))
+    if porny:
+        if pornfolder==[]:
+            tracks = list(os.listdir(os.path.join("cache", "telegram")))
         else:
-            tracks = list(map(lambda x: x[0],list_tracks()))
-        random.shuffle(tracks)
-        for ele in tracks:
-            if not os.path.exists('cache/started/%s.started'%ele.split("/")[-1]):
-                if porny:
-                    if pornfolder==[]:
-                        player.play(os.path.join("cache", "telegram",ele))
-                    else:
-                        player.play(ele)
-                else:
-                    player.play(find_track(ele))
-                break
-        else:
-            for ele in tracks:
-                os.remove('cache/started/%s.started'%ele.split("/")[-1])
+            tracks = []
+            for folder in pornfolder:
+                for root, dirs, files in os.walk(commands[folder], topdown=False):
+                    for f in files:
+                        if f[0]==".":
+                            continue
+                        if f.split(".")[-1].lower() not in ('mp4', 'jpg', 'jpeg', 'png', 'gif'):
+                            continue
+                        tracks.append(os.path.join(root,f))
+    else:
+        tracks = list(map(lambda x: x[0],list_tracks()))
+    random.shuffle(tracks)
+    for ele in tracks:
+        if not os.path.exists('cache/started/%s.started'%ele.split("/")[-1]):
             if porny:
                 if pornfolder==[]:
-                    player.play(os.path.join("cache","telegram",ele))
+                    mpv_handle_play_file(os.path.join("cache", "telegram",ele), True)
                 else:
-                    player.play(ele)
+                    mpv_handle_play_file(ele, True)
             else:
-                player.play(find_track(ele))
+                mpv_handle_play_file(find_track(ele), True)
+            break
+    else:
+        for ele in tracks:
+            os.remove('cache/started/%s.started'%ele.split("/")[-1])
+        perform_shuffle(True)
+    if porny:
+        perform_shuffle(True)
+    if not inner:
         telegram_send_started()
+
 
 @app.route("/music/")
 def music():
