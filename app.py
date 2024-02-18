@@ -1,4 +1,4 @@
-from flask import Flask,redirect, request
+from flask import Flask,redirect, request, send_from_directory
 import json
 import yt_dlp
 from yt_dlp import extractor
@@ -303,6 +303,12 @@ def telegram_bot_send_file(chat, filename):
     response=requests.post(url, data={'chat_id': chat}, files={'photo': open(filename,"rb")})
     return response
 
+def telegram_bot_send_document(chat, filename):
+    import requests
+    url="https://api.telegram.org/bot"+telegram_token+"/sendDocument"
+    response=requests.post(url, data={'chat_id': chat}, files={'document': open(filename,"rb")})
+    return response
+
 
 def telegram_bot_execute(command, data=None, method=None):
     try:
@@ -467,6 +473,35 @@ def telegram_bot_process_updates():
                 if text=="z" and player.pause:
                     player.seek(-1)
                     continue
+                if text.startswith("/download") and player is not None and not player.pause:
+                    filename=" ".join(text.split(" ")[1:])
+                    watching=False
+                    if filename=="":
+                        filename=list(map(lambda x: x['filename'],itertools.dropwhile(lambda x: 'current' not in x or not x['current'], player.playlist)))[0]
+                        watching=True
+                    if not (filename.startswith("/") or filename.startswith("cache")):
+                        text="Downloading..."
+                        length=len(text.encode('utf-16-le'))//2
+                        telegram_bot_send_message(text, update["chat"]["id"], {"type": "italic", "offset": 0, "length": length})
+                        telegram_bot_execute("sendChatAction",{"chat_id":update["chat"]["id"],"action":"typing"})
+                        with yt_dlp.YoutubeDL({"outtmpl":'cache/telegram/%(title)s.%(ext)s'}) as ydl:
+                            info=ydl.extract_info(filename, download=True)
+                            filename = ydl.prepare_filename(info)
+                    if watching:
+                        open('cache/started/%s.started'%filename.split('/')[-1], 'a').close()
+                    file_stats=os.stat(filename)
+                    if file_stats.st_size<1024*1024*50:
+                        telegram_bot_send_document(update["chat"]["id"], filename)
+                        continue
+                    else:
+                        file_url=home_url+"download/"+filename.split("/")[-1]
+                        file_url=file_url.replace(" ","%20")
+                        text="File available at "
+                        offset=len(text.encode('utf-16-le'))//2
+                        text+=file_url
+                        length=len(text.encode('utf-16-le'))//2-offset
+                        telegram_bot_send_message(text,update["chat"]["id"], {"type": "url", "offset": offset, "length": length})
+                        continue
                 if text.startswith("/seek"):
                     seekpos= max(0, min(100,int(text.split(" ")[-1])))
                     player.seek(seekpos,"absolute-percent")
@@ -662,8 +697,8 @@ def is_in_playlist(video):
     return None
 
 def generate_thumbnail(info, uploader=None):
-    if "thumbnail" in info and info['thumbnail'] is not None:
-        return "<img src='/thumb/%s'/>"%info['thumbnail']
+    if "telegram_thumbnail" in info and info['telegram_thumbnail'] is not None:
+        return "<img src='/thumb/%s'/>"%info['telegram_thumbnail']
     if not 'thumbnails' in info:
         return ""
     if 'fulltitle' in info:
@@ -830,13 +865,13 @@ def get_info(videourl):
             if len(breakdown)>1:
                 tumblr_url="https://www.tumblr.com/%s/%s"%(breakdown[0],breakdown[1])
                 if thumbnail is None:
-                    return {'title': name, 'id': videourl, 'tumblr_url': tumblr_url, 'thumbnail':thumbnail}
+                    return {'title': name, 'id': videourl, 'tumblr_url': tumblr_url, 'telegram_thumbnail':thumbnail}
                 else:
                     return {'title': name, 'id': videourl, 'tumblr_url': tumblr_url}
         if thumbnail is None:
             return {'title': name, 'id': videourl}
         else:
-            return {'title': name, 'id': videourl, 'thumbnail': thumbnail}
+            return {'title': name, 'id': videourl, 'telegram_thumbnail': thumbnail}
     videoid=""
     for e in extractor.list_extractor_classes():
         if e.working() and e.suitable(videourl) and e.IE_NAME != "generic":
@@ -1233,11 +1268,17 @@ def perform_shuffle(inner=False):
     if not inner:
         telegram_send_started()
 
+@app.route("/download/<filename>")
+def download(filename):
+    if "/" in filename:
+        return
+    return send_from_directory(os.path.join("cache","telegram"), filename)
+
 @app.route("/thumb/<filename>")
 def thumbnail(filename):
     if os.path.exists(os.path.expanduser("~/.thumbnails/")) and os.path.exists(os.path.expanduser("~/.thumbnails/%s"%filename)):
-        return open(os.path.expanduser("~/.thumbnails/%s"%filename), 'rb').read()
-    return open(os.path.expanduser("~/.cache/thumbnails/large/%s"%filename), 'rb').read()
+        return send_from_directory(os.path.expanduser("~/.thumbnails"), filename)
+    return send_from_directory(os.path.expanduser("~/.cache/thumbnails/large"), filename)
 
 @app.route("/telegram/", methods=['GET', 'POST'])
 def telegram_page():
@@ -1521,6 +1562,7 @@ if __name__ == "__main__":
           except Exception as e:
             traceback.format_exc()
     other_thread = threading.Thread(target=bot_updates)
+    other_thread.daemon = True
     other_thread.start()
     telegram_bot_send_message_all("Good morning my ladies and gents.\n\nTo play a file please visit http://%s or send a file or link!"%home_url)
     app.run(host=ip, port=5968)
