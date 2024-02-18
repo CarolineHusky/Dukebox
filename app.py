@@ -23,10 +23,13 @@ if blank:
     log = logging.getLogger('werkzeug')
     log.setLevel(logging.ERROR)
 
-MUSIC_FOLDER="/home/mii/Music/Music"
+MUSIC_FOLDER=os.path.expanduser("~/Music/Music")
 
 
 app = Flask(__name__)
+app.config['UPLOAD_FOLDER'] = os.path.join("cache","telegram")
+
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'mp4', 'mpv', 'webp', 'webm'}
 
 import mpv
 
@@ -221,6 +224,8 @@ img {
     width: 100%;
 }
 section.videogrid{
+    overflow-y: hidden;
+    width: 100vw;
     display: flex;
     flex-wrap: wrap;
     margin-top: 1em;
@@ -380,7 +385,7 @@ def telegram_bot_process_updates():
                 if not blank:
                     print("[telegram bot] "+text)
                 if text.startswith("/vol"):
-                    player.volume = max(0, min(100,int(text.split(" ")[-1])))
+                    player.volume = max(0, min(300,int(text.split(" ")[-1])))
                     continue
                 if text=="/screenshot":
                     os.makedirs(os.path.join("cache","screenshot"), exist_ok=True)
@@ -657,6 +662,8 @@ def is_in_playlist(video):
     return None
 
 def generate_thumbnail(info, uploader=None):
+    if "thumbnail" in info and info['thumbnail'] is not None:
+        return "<img src='/thumb/%s'/>"%info['thumbnail']
     if not 'thumbnails' in info:
         return ""
     if 'fulltitle' in info:
@@ -687,7 +694,10 @@ def generate_description(info, uploader=None, clickable=False):
         title=info['title']
     html="<figure>"
     if clickable:
-        html+="<a href=\"play/%s\">"%info['id']
+        if "/" in info['id']:
+            html+="<a href=\"play/%s\">"%info['id'].split("/")[-1]
+        else:
+            html+="<a href=\"play/%s\">"%info['id']
     html+=generate_thumbnail(info,uploader)
     if clickable:
         html+="</a>"
@@ -695,7 +705,10 @@ def generate_description(info, uploader=None, clickable=False):
     if not info['id'].startswith("/") and not info['id'].startswith("cache"):
         html+="<details data-source=\"/describe/%s\"><summary>"%info['id']
     else:
-        html+="<a class='song' href=\"/music/play/%s\">"%info['title']
+        if info['id'].startswith(os.path.join("cache","telegram")):
+            html+="<a class='song' href=\"play/%s\">"%info['title']
+        else:
+            html+="<a class='song' href=\"/music/play/%s\">"%info['title']
     if is_in_playlist(info['id']) is not None:
         index = is_in_playlist(info['id'])
         if index==0:
@@ -755,6 +768,7 @@ def generate_channelpage(info, endless=False):
 
 def generate_searchpage(info,searchterm, songsearch):
     html="<h1><small>Searched for: </small>%s</h1>"%(searchterm)
+    html+="<a href=\"/\">Home</a>"
     if len(songsearch)>0:
         html+="<h2><small>From the </small>local music library:</h2>"
         html+="<table><tbody>"
@@ -769,16 +783,60 @@ def generate_searchpage(info,searchterm, songsearch):
     html+="</section>"
     return html
 
+def get_order(filename):
+    if player is not None:
+        playlist=list(map(lambda x: x['filename'], player.playlist))
+        if filename in playlist:
+            return -playlist.index(filename)
+    filename=filename.split("/")[-1]
+    startfile=os.path.join("cache","started", filename+".started")
+    if os.path.exists(startfile):
+        return sys.maxsize-os.path.getmtime(startfile)
+    startfile=os.path.join("cache","watched", filename+".watched")
+    if os.path.exists(startfile):
+        return sys.maxsize-os.path.getmtime(startfile)
+    return sys.maxsize
+
+def generate_telegrampage():
+    files=os.listdir(os.path.join("cache","telegram"))
+    files=list(map(lambda x: os.path.join("cache","telegram",x), files))
+    files=sorted(files, key=lambda x: get_order(x))
+    for filename in files:
+        html="<h1>Recently uploaded...</h1>"
+        html+="<a href=\"/\">Home</a><br/><br/>"
+        html+="""<form method="post"" enctype="multipart/form-data"><input type="file" name="file"></input><input type="submit" value="Upload file..."></input></form>"""
+        html+="<section class='videogrid'>"
+        for ele in files:
+            html+=generate_description(get_info(ele), clickable=True)
+        html+="</section>"
+    return html
+
+def get_thumbnail(filename):
+    filename=os.path.abspath(filename)
+    filename="file://"+filename.replace(" ", "%20")
+    filename=hashlib.md5(filename.encode()).hexdigest()+".png"
+    if os.path.exists(os.path.expanduser("~/.thumbnails/")) and os.path.exists(os.path.expanduser("~/.thumbnails/%s"%filename)):
+        return filename
+    if os.path.exists(os.path.expanduser("~/.cache/thumbnails/large")) and os.path.exists(os.path.expanduser("~/.cache/thumbnails/large/%s"%filename)):
+        return filename
+    return None
 
 def get_info(videourl):
     if not videourl.startswith("http"):
+        thumbnail=get_thumbnail(videourl)
         name = videourl.split("/")[-1]
         if videourl.split("/")[-2].lower() == "tumblr":
             breakdown=name.split(".")[0].split("_")
             if len(breakdown)>1:
                 tumblr_url="https://www.tumblr.com/%s/%s"%(breakdown[0],breakdown[1])
-                return {'title': name, 'id': videourl, 'tumblr_url': tumblr_url}
-        return {'title': name, 'id': videourl}
+                if thumbnail is None:
+                    return {'title': name, 'id': videourl, 'tumblr_url': tumblr_url, 'thumbnail':thumbnail}
+                else:
+                    return {'title': name, 'id': videourl, 'tumblr_url': tumblr_url}
+        if thumbnail is None:
+            return {'title': name, 'id': videourl}
+        else:
+            return {'title': name, 'id': videourl, 'thumbnail': thumbnail}
     videoid=""
     for e in extractor.list_extractor_classes():
         if e.working() and e.suitable(videourl) and e.IE_NAME != "generic":
@@ -802,11 +860,6 @@ def generate_page(page, title):
     html+="</head><body>"
     html+="<header><input id='search'/><button id='searchbutton'>Search YT</button>"
     html+="</header>"
-    yield html
-    html=""
-    html+="<main>"
-    html+=page
-    html+="</main>"
     if player is not None:
         playlist=list(map(lambda x: get_info(x['filename']),itertools.dropwhile(lambda x: 'current' not in x or not x['current'], player.playlist)))
         if len(playlist)>0:
@@ -829,6 +882,11 @@ def generate_page(page, title):
                 html+="<a id='resume' href='pause'>Pause</a>"
             html+="<input type='range' id='volume' min='0' max='100' value='%d'/>"%player.volume
             html+="</div></footer>"
+    yield html
+    html=""
+    html+="<main>"
+    html+=page
+    html+="</main>"
     html+="""
 <script>
 var details = document.querySelectorAll("details");
@@ -888,6 +946,9 @@ screenoff=False
 def mpv_handle_start(event):
     global screenoff
     os.makedirs("cache/started", exist_ok=True)
+    if len(list(filter(lambda x: x['id']==event.data.playlist_entry_id, player.playlist)))==0:
+        perform_shuffle()
+        return
     filename = list(filter(lambda x: x['id']==event.data.playlist_entry_id, player.playlist))[0]['filename']
     sponsorblock(filename)
     filename=filename.split('/')[-1]
@@ -960,7 +1021,7 @@ def create_player():
     if blank:
         os.system("setterm -cursor off;setterm -clear;")
     if player is None:
-        player=mpv.MPV(ytdl=True, image_display_duration=8, ytdl_format="bestvideo[height<=1080]+bestaudio/best[height<=1080]", input_vo_keyboard=True, osc=True, alpha="blend")
+        player=mpv.MPV(ytdl=True, image_display_duration=8, ytdl_format="bestvideo[height<=1080]+bestaudio/best[height<=1080]", input_vo_keyboard=True, osc=True, alpha="blend", volume_max=300)
 
     @player.event_callback('start-file')
     def start(event):
@@ -1172,6 +1233,28 @@ def perform_shuffle(inner=False):
     if not inner:
         telegram_send_started()
 
+@app.route("/thumb/<filename>")
+def thumbnail(filename):
+    if os.path.exists(os.path.expanduser("~/.thumbnails/")) and os.path.exists(os.path.expanduser("~/.thumbnails/%s"%filename)):
+        return open(os.path.expanduser("~/.thumbnails/%s"%filename), 'rb').read()
+    return open(os.path.expanduser("~/.cache/thumbnails/large/%s"%filename), 'rb').read()
+
+@app.route("/telegram/", methods=['GET', 'POST'])
+def telegram_page():
+    if request.method == 'POST':
+        file = request.files['file']
+        if '/' in file.filename:
+            return ''
+        if file.filename != '':
+            file.save(os.path.join(app.config['UPLOAD_FOLDER'], file.filename))
+            mpv_handle_play_file(os.path.join(app.config['UPLOAD_FOLDER'],file.filename))
+        return redirect('/telegram')
+    return generate_page(generate_telegrampage(), "Telegram")
+
+@app.route("/telegram/play/<name>")
+def telegram_play(name):
+    mpv_handle_play_file(os.path.join("cache","telegram",name))
+    return redirect('/telegram')
 
 @app.route("/music/")
 def music():
@@ -1337,7 +1420,7 @@ def generate_home_page(index):
     windex=int(index)+1
     index=windex*36
     html='<h1>Welcome to Mii\'s Dukebox!</h1>'
-    html+='<a href="/music/">Local music</a>'
+    html+='<a href="/music/">Local music</a> - <a href="/telegram/">Uploads</a>'
     if subscriptions is not None:
         subscriptions = set(sorted(subscriptions.split(',')))
         pages = []
