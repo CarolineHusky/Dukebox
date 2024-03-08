@@ -16,7 +16,9 @@ import logging
 import sys
 import psutil
 import traceback
-
+import base64
+import functools
+from PIL import Image
 
 blank=True
 if blank:
@@ -42,6 +44,7 @@ def style():
     return """
 body{
     color: white;
+    background-color: black;
     background: repeating-linear-gradient(
         120deg,
         rgba(32,96,128),
@@ -234,8 +237,8 @@ section.videogrid{
 }
 section.videogrid>figure, #oopnext>div>figure{
     flex-grow: 1;
-    max-width: 480px;
-    flex-basis: 320px;
+    max-width: 320px;
+    flex-basis: 240px;
     margin: 0;
     margin-bottom: 16px;
 }
@@ -297,15 +300,23 @@ if os.path.exists("commands.json"):
     with open("commands.json") as f:
         commands=json.load(f)
 
-def telegram_bot_send_file(chat, filename):
-    import requests
-    url="https://api.telegram.org/bot"+telegram_token+"/sendPhoto"
-    response=requests.post(url, data={'chat_id': chat}, files={'photo': open(filename,"rb")})
-    return response
+known_forwards={}
 
 def telegram_bot_send_document(chat, filename):
+    if filename in known_forwards:
+        from_chat, message = known_forwards[filename]
+        return telegram_bot_execute("forwardMessage", {"chat_id": chat, "from_chat_id": from_chat, "message_id": message})
     import requests
-    url="https://api.telegram.org/bot"+telegram_token+"/sendDocument"
+    url="https://api.telegram.org/bot"+telegram_token
+    if filename.lower().endswith(".mp4") or filename.lower().endswith(".webm"):
+        url+="/sendVideo"
+        response=requests.post(url, data={'chat_id': chat}, files={'video': open(filename,"rb")})
+        return response
+    if filename.lower().endswith(".ogg"):
+        url+="/sendVoice"
+        response=requests.post(url, data={'chat_id': chat}, files={'voice': open(filename,"rb")})
+        return response
+    url+="/sendDocument"
     response=requests.post(url, data={'chat_id': chat}, files={'document': open(filename,"rb")})
     return response
 
@@ -358,10 +369,11 @@ def telegram_bot_get_updates():
                 with open(os.path.join("cache","telegram_chats.txt")) as f:
                     telegram_chats = f.read().split("\n")
             if user_update_lock is not None and str(chat_id)!=str(user_update_lock):
+                telegram_bot_send_message("UwU Bot not available QwQ",chat_id)
                 continue
         yield update["message"]
 
-def telegram_bot_download_file(file_id, destination=None):
+def telegram_bot_download_file(file_id, destination=None, chat=None, message=None):
     file_info=telegram_bot_execute("getFile", {"file_id": file_id})
     file_path=file_info['result']['file_path']
     if destination is None:
@@ -376,6 +388,12 @@ def telegram_bot_download_file(file_id, destination=None):
     try:
         url="https://api.telegram.org/file/bot"+telegram_token+"/"+file_path
         urllib.request.urlretrieve(url, destination)
+        if chat is not None and message is not None:
+            known_forwards[destination]=(chat,message)
+        if destination.lower().split(".")[-1] in ("jpg","jpeg","png","bmp"):
+            image = Image.open(destination)
+            image.thumbnail((256,256))
+            image.save(os.path.join(os.path.expanduser("~/.cache/thumbnails/large"),get_thumbnail_location(destination)))
         return destination
     except urllib.error.HTTPError as e:
         body = json.loads(e.read().decode())  # Read the body of the error response
@@ -416,6 +434,9 @@ def telegram_bot_process_updates():
                 if text.startswith("/vol"):
                     player.volume = max(0, min(300,int(text.split(" ")[-1])))
                     continue
+                if text.startswith("/speed"):
+                    player.speed = float(text.lstrip("/speed "))
+                    continue
                 if text.startswith("/sub"):
                     player['sub-visibility']=True
                     if len(text)>4:
@@ -445,7 +466,7 @@ def telegram_bot_process_updates():
                     name=filename['title']
                     filename=os.path.join("cache","screenshot","%s-%.2f.png"%(name,player.time_pos))
                     player.screenshot_to_file(filename)
-                    telegram_bot_send_file(update["chat"]["id"],filename)
+                    telegram_bot_send_document(update["chat"]["id"],filename)
                     continue
                 if text=="/shuffle":
                     shuffle = True
@@ -567,6 +588,9 @@ def telegram_bot_process_updates():
                     seekpos= max(0, min(100,int(text.split(" ")[-1])))
                     player.seek(seekpos,"absolute-percent")
                     continue
+                if text=="/start" or text=="/status":
+                    has_updates=True
+                    continue
                 if text=="/oofvideo":
                     mpv_handle_play_file(
                         "https://www.youtube.com/watch?v=0twDETh6QaI",
@@ -607,13 +631,13 @@ def telegram_bot_process_updates():
                 telegram_bot_execute("sendChatAction",{"chat_id":update["chat"]["id"],"action":"typing"})
                 try:
                     if "file_name" in update[ele]:
-                        download_file=telegram_bot_download_file(update[ele]["file_id"],update[ele]["file_name"])
+                        download_file=telegram_bot_download_file(update[ele]["file_id"],update[ele]["file_name"], update["chat"]["id"], update["message_id"])
                     elif "set_name" in update[ele] and "emoji" in update[ele]:
-                        download_file=telegram_bot_download_file(update[ele]["file_id"],update[ele]["set_name"]+" "+update[ele]["emoji"])
+                        download_file=telegram_bot_download_file(update[ele]["file_id"],update[ele]["set_name"]+" "+update[ele]["emoji"], update["chat"]["id"], update["message_id"])
                     elif "file_unique_id" in update[ele]:
-                        download_file=telegram_bot_download_file(update[ele]["file_id"],update[ele]["file_unique_id"])
+                        download_file=telegram_bot_download_file(update[ele]["file_id"],update[ele]["file_unique_id"], update["chat"]["id"], update["message_id"])
                     else:
-                        download_file=telegram_bot_download_file(update[ele]["file_id"])
+                        download_file=telegram_bot_download_file(update[ele]["file_id"], None, update["chat"]["id"], update["message_id"])
                     mpv_handle_play_file(download_file, True)
                     has_updates=True
                     #print(download_file)
@@ -628,9 +652,9 @@ def telegram_bot_process_updates():
                         break
                     bestphoto=photo
                 if "file_unique_id" in bestphoto:
-                    download_file=telegram_bot_download_file(bestphoto["file_id"],bestphoto["file_unique_id"])
+                    download_file=telegram_bot_download_file(bestphoto["file_id"],bestphoto["file_unique_id"], update["chat"]["id"], update["message_id"])
                 else:
-                    download_file=telegram_bot_download_file(bestphoto['file_id'])
+                    download_file=telegram_bot_download_file(bestphoto['file_id'], None, update["chat"]["id"], update["message_id"])
                 mpv_handle_play_file(download_file, True)
                 has_updates=True
     if has_updates:
@@ -762,9 +786,25 @@ def is_in_playlist(video):
         return playlist.index(video)
     return None
 
+def html_idify(text):
+    out=""
+    for letter in text:
+        if letter.lower() not in "abcdefghijklmnopqrstuvwxyz0123456789-_":
+            if len(out)>0 and out[-1]!="_":
+                out+="_"
+        else:
+            out+=letter
+    return out
+
+@functools.cache
+def generate_b64thumb(filename):
+    with open(os.path.expanduser("~/.cache/thumbnails/large/"+filename), "rb") as image_file:
+        encoded_string = base64.b64encode(image_file.read())
+    return "data:image/png;base64, "+encoded_string.decode('ascii')
+
 def generate_thumbnail(info, uploader=None):
     if "telegram_thumbnail" in info and info['telegram_thumbnail'] is not None:
-        return "<img src='/thumb/%s'/>"%info['telegram_thumbnail']
+        return "<img src='%s'/>"%generate_b64thumb(info['telegram_thumbnail'])
     if not 'thumbnails' in info:
         return ""
     if 'fulltitle' in info:
@@ -788,12 +828,15 @@ def generate_thumbnail(info, uploader=None):
     imgtag+='>'
     return imgtag
 
-def generate_description(info, uploader=None, clickable=False):
+def generate_description(info, uploader=None, clickable=False, mainpage=True):
     if 'fulltitle' in info:
         title=info['fulltitle']
     else:
         title=info['title']
-    html="<figure>"
+    if clickable and mainpage:
+        html="<figure id='%s'>"%html_idify(info['id'].split('/')[-1])
+    else:
+        html="<figure>"
     if clickable:
         if "/" in info['id']:
             html+="<a href=\"play/%s\">"%info['id'].split("/")[-1]
@@ -898,31 +941,43 @@ def get_order(filename):
         return sys.maxsize-os.path.getmtime(startfile)
     return sys.maxsize
 
-def generate_telegrampage():
+def generate_telegrampage(ext=None):
     files=os.listdir(os.path.join("cache","telegram"))
     files=list(map(lambda x: os.path.join("cache","telegram",x), files))
     files=sorted(files, key=lambda x: get_order(x))
-    for filename in files:
-        html="<h1>Recently uploaded...</h1>"
-        html+="<a href=\"/\">Home</a><br/><br/>"
+    html="<h1>Recently uploaded...</h1>"
+    html+="<a href=\"/\">Home</a>"
+    if ext is None:
+        html+=" - <a href=\"/telegram/videos\">Videos</a><br/><br/>"
+    else:
+        html+=" - <a href=\"/telegram\">All uploads</a><br/><br/>"
+    if ext is None:
         html+="""<form method="post"" enctype="multipart/form-data"><input type="file" name="file"></input><input type="submit" value="Upload file..."></input></form>"""
-        html+="<section class='videogrid'>"
-        for ele in files:
-            html+=generate_description(get_info(ele), clickable=True)
-        html+="</section>"
-    return html
+    html+="<section class='videogrid'>"
+    yield html
+    for filename in files:
+        if ext is not None and not filename.split(".")[-1] in ext:
+            continue
+        yield generate_description(get_info(filename), clickable=True)
+    yield "</section>"
+
+def get_thumbnail_location(filename):
+    filename=os.path.abspath(filename)
+    filename="file://"+filename.replace(" ", "%20")
+    filename=hashlib.md5(filename.encode()).hexdigest()+".png"
+    return filename
 
 def get_thumbnail(filename):
     filename=os.path.abspath(filename)
     filename="file://"+filename.replace(" ", "%20")
     filename=hashlib.md5(filename.encode()).hexdigest()+".png"
-    if os.path.exists(os.path.expanduser("~/.thumbnails/")) and os.path.exists(os.path.expanduser("~/.thumbnails/%s"%filename)):
-        return filename
     if os.path.exists(os.path.expanduser("~/.cache/thumbnails/large")) and os.path.exists(os.path.expanduser("~/.cache/thumbnails/large/%s"%filename)):
         return filename
     return None
 
 def get_info(videourl):
+    if videourl is None:
+        raise Exception("Broken link")
     if not videourl.startswith("http"):
         thumbnail=get_thumbnail(videourl)
         name = videourl.split("/")[-1]
@@ -969,11 +1024,11 @@ def generate_page(page, title):
             if len(playlist)>1:
                 html+=" (%d)"%len(playlist)
             html+=": <strong>"+playlist[0]['title']+"</strong></summary>"
-            html+=generate_description(playlist[0], clickable=True)
+            html+=generate_description(playlist[0], clickable=True, mainpage=False)
             if len(playlist)>1:
                 html+="Up next: <div>"
                 for ele in playlist[1:]:
-                    html+=generate_description(ele, clickable=True)
+                    html+=generate_description(ele, clickable=True, mainpage=False)
                 html+="</div>"
             html+="</details>"
             html+="</div><div>"
@@ -983,11 +1038,14 @@ def generate_page(page, title):
                 html+="<a id='resume' href='pause'>Pause</a>"
             html+="<input type='range' id='volume' min='0' max='100' value='%d'/>"%player.volume
             html+="</div></footer>"
-    yield html
-    html=""
     html+="<main>"
-    html+=page
-    html+="</main>"
+    yield html
+    if hasattr(page, '__iter__') and not hasattr(page, '__len__'):
+        for ele in page:
+            yield ele
+    else:
+        yield page
+    html="</main>"
     html+="""
 <script>
 var details = document.querySelectorAll("details");
@@ -1122,7 +1180,7 @@ def create_player():
     if blank:
         os.system("setterm -cursor off;setterm -clear;")
     if player is None:
-        player=mpv.MPV(ytdl=True, image_display_duration=8, ytdl_format="bestvideo[height<=1080]+bestaudio/best[height<=1080]", input_vo_keyboard=True, osc=True, alpha="blend", volume_max=300, profile="sw-fast", slang="en", sub_auto="fuzzy", ytdl_raw_options="ignore-config=,sub-lang=en,write-sub=,write-auto-sub=", sub_visibility=False, hwdec="vaapi")
+        player=mpv.MPV(ytdl=True, image_display_duration=8, ytdl_format="bestvideo[height<=1080]+bestaudio/best[height<=1080]", input_vo_keyboard=True, osc=True, alpha="blend", volume_max=300, profile="sw-fast", slang="en", sub_auto="fuzzy", ytdl_raw_options="ignore-config=,sub-lang=en,write-sub=,write-auto-sub=", sub_visibility=False, hwdec="vaapi", drm_connector="HDMI-A-2")
 
     @player.event_callback('start-file')
     def start(event):
@@ -1200,7 +1258,7 @@ def find_track(filename):
 
 def generate_music_row(filename, artist, album, number, track, trackfirst=False):
     html="<tr>"
-    html+="<td>"
+    html+="<td id='%s'>"%html_idify(filename.split('/')[-1])
     if is_in_playlist(filename) is not None:
         index = is_in_playlist(filename)
         if index==0:
@@ -1342,8 +1400,8 @@ def download(filename):
 
 @app.route("/thumb/<filename>")
 def thumbnail(filename):
-    if os.path.exists(os.path.expanduser("~/.thumbnails/")) and os.path.exists(os.path.expanduser("~/.thumbnails/%s"%filename)):
-        return send_from_directory(os.path.expanduser("~/.thumbnails"), filename)
+    #if os.path.exists(os.path.expanduser("~/.thumbnails/")) and os.path.exists(os.path.expanduser("~/.thumbnails/%s"%filename)):
+    #    return send_from_directory(os.path.expanduser("~/.thumbnails"), filename)
     return send_from_directory(os.path.expanduser("~/.cache/thumbnails/large"), filename)
 
 @app.route("/telegram/", methods=['GET', 'POST'])
@@ -1361,7 +1419,16 @@ def telegram_page():
 @app.route("/telegram/play/<name>")
 def telegram_play(name):
     mpv_handle_play_file(os.path.join("cache","telegram",name))
-    return redirect('/telegram')
+    return redirect('/telegram/#%s'%name)
+
+@app.route("/telegram/videos/")
+def telegram_videopage():
+    return generate_page(generate_telegrampage(["mp4",'mkv',"webm"]), "Telegram")
+
+@app.route("/telegram/videos/play/<name>")
+def telegram_videoplay(name):
+    mpv_handle_play_file(os.path.join("cache","telegram",name))
+    return redirect('/telegram/videos/#%s'%html_idify(name))
 
 @app.route("/music/")
 def music():
@@ -1386,12 +1453,12 @@ def music_artist(name):
 @app.route("/music/play/<name>")
 def music_play(name):
     mpv_handle_play_file(find_track(name))
-    return redirect('/music')
+    return redirect('/music/#%s'%html_idify(name))
 
 @app.route("/music/artist/<artist>/play/<name>")
 def music_artist_play(artist,name):
     mpv_handle_play_file(find_track(name))
-    return redirect('/music/artist/'+artist)
+    return redirect('/music/artist/'+artist+"/#"+html_idify(name))
 
 @app.route("/music/artist/<artist>/pause")
 def music_artist_pause(artist):
@@ -1431,17 +1498,17 @@ def user_subscribe(name):
 @app.route("/<int:index>/play/<video>")
 def home_play(video, index=0):
     mpv_handle_play(video)
-    return redirect('/')
+    return redirect('/#%s'%(name, html_idify(video)))
 
 @app.route("/user/<name>/play/<video>")
 def user_play(name, video):
     mpv_handle_play(video)
-    return redirect('/user/%s/'%name)
+    return redirect('/user/%s/#v%s'%(name, video))
 
 @app.route("/user/<name>/endless/play/<video>")
 def user_play_endless(name, video):
     mpv_handle_play(video)
-    return redirect('/user/%s/endless/'%name)
+    return redirect('/user/%s/endless/#%s'%(name, html_idify(video)))
 
 @app.route("/user/<name>/")
 def user(name):
@@ -1462,7 +1529,7 @@ def user_endless(name):
 @app.route("/channel/<name>/play/<video>")
 def channel_play(name, video):
     mpv_handle_play(video)
-    return redirect('/channel/%s/'%name)
+    return redirect('/channel/%s/#%s'%(name, html_idify(video)))
 
 @app.route("/channel/<name>/pause")
 def channel_pause(name):
@@ -1494,7 +1561,7 @@ def channel_endless(name):
 @app.route("/search/<name>/play/<video>")
 def search_play(name, video):
     mpv_handle_play(video)
-    return redirect('/search/%s/'%name)
+    return redirect('/search/%s/#%s'%(name, html_idify(video)))
 
 @app.route("/search/<name>/pause")
 def search_pause(name):
