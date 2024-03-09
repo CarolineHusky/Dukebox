@@ -19,13 +19,17 @@ import traceback
 import base64
 import functools
 from PIL import Image
+import configparser
+
+config=configparser.ConfigParser()
+config.read('config.ini')
 
 blank=True
 if blank:
     log = logging.getLogger('werkzeug')
     log.setLevel(logging.ERROR)
 
-MUSIC_FOLDER=os.path.expanduser("~/Music/Music")
+MUSIC_FOLDER=os.path.expanduser(config["Folders"]["Music"])
 
 
 app = Flask(__name__)
@@ -289,16 +293,10 @@ small{
 }
     """.replace('\n','')
 
-telegram_token=None
-telegram_last_processed=0
-telegram_chats = set()
 home_url = ""
 shutdown = False
 
-commands={}
-if os.path.exists("commands.json"):
-    with open("commands.json") as f:
-        commands=json.load(f)
+commands=config["Commands"]
 
 known_forwards={}
 
@@ -307,10 +305,14 @@ def telegram_bot_send_document(chat, filename):
         from_chat, message = known_forwards[filename]
         return telegram_bot_execute("forwardMessage", {"chat_id": chat, "from_chat_id": from_chat, "message_id": message})
     import requests
-    url="https://api.telegram.org/bot"+telegram_token
+    url="https://api.telegram.org/bot"+config["Telegram"]["Token"]
     if filename.lower().endswith(".mp4") or filename.lower().endswith(".webm"):
         url+="/sendVideo"
-        response=requests.post(url, data={'chat_id': chat}, files={'video': open(filename,"rb")})
+        thumbnail_url=os.path.join(os.path.expanduser(config["Folders"]["Thumbnails"]),get_thumbnail_location(filename))
+        if os.path.exists(thumbnail_url):
+            response=requests.post(url, data={'chat_id': chat}, files={'video': open(filename,"rb"), 'thumbnail':open(thumbnail_url,'rb')})
+        else:
+            response=requests.post(url, data={'chat_id': chat}, files={'video': open(filename,"rb")})
         return response
     if filename.lower().endswith(".ogg"):
         url+="/sendVoice"
@@ -324,15 +326,11 @@ def telegram_bot_send_document(chat, filename):
 def telegram_bot_execute(command, data=None, method=None):
     try:
         headers={}
-        global telegram_token
         if data is not None:
             data=json.dumps(data).encode("utf-8")
             headers["Content-Length"]=len(data)
             headers["Content-Type"]="application/json"
-        if telegram_token is None:
-            with open("telegram_token.txt") as f:
-                telegram_token=f.read().strip("\n")
-        url="https://api.telegram.org/bot"+telegram_token+"/" + command
+        url="https://api.telegram.org/bot"+config["Telegram"]["Token"]+"/" + command
         request=urllib.request.Request(url,data,headers,method=method)
         return json.load(urllib.request.urlopen(request))
     except urllib.error.HTTPError as e:
@@ -346,28 +344,21 @@ def telegram_bot_execute(command, data=None, method=None):
 user_update_lock=None
 
 def telegram_bot_get_updates():
-    global telegram_last_processed
-    global telegram_chats
-    if telegram_last_processed==0 and os.path.exists(os.path.join("cache","telegram_last_update.txt")):
-        with open(os.path.join("cache","telegram_last_update.txt")) as f:
-            telegram_last_processed=int(f.read().strip("\n"))
-    #telegram_last_processed=0
-    if len(telegram_chats)==0 and os.path.exists(os.path.join("cache","telegram_chats.txt")):
-        with open(os.path.join("cache","telegram_chats.txt")) as f:
-            telegram_chats = f.read().split("\n")
-    updates=telegram_bot_execute("getUpdates", {"offset": telegram_last_processed+1, "allowed_updates": ["message"]})["result"]
+    if not "Telegram" in config:
+        return
+    updates=telegram_bot_execute("getUpdates", {"offset": int(config["Telegram"]["LastUpdate"])+1, "allowed_updates": ["message"]})["result"]
     for update in updates:
-        if telegram_last_processed is None or update['update_id']>telegram_last_processed:
-            telegram_last_processed = update['update_id']
-            with open(os.path.join("cache","telegram_last_update.txt"), "w") as f:
-                f.write("%d"%telegram_last_processed)
+        if update['update_id']>int(config["Telegram"]["LastUpdate"]):
+            config["Telegram"]["LastUpdate"] = str(update['update_id'])
+            with open("config.ini", "w") as f:
+                config.write(f)
         if "chat" in update["message"]:
             chat_id=str(update["message"]["chat"]["id"])
-            if chat_id not in telegram_chats:
-                with open(os.path.join("cache","telegram_chats.txt"), "a") as f:
-                    f.write(chat_id+"\n")
-                with open(os.path.join("cache","telegram_chats.txt")) as f:
-                    telegram_chats = f.read().split("\n")
+            if chat_id not in config["Telegram"]["Chats"]:
+                config["Telegram"]["Chats"]+=","+str(chat_id)
+                config["Telegram"]["Chats"]=config["Telegram"]["Chats"].strip(",")
+                with open("config.ini", "w") as f:
+                    config.write(f)
             if user_update_lock is not None and str(chat_id)!=str(user_update_lock):
                 telegram_bot_send_message("UwU Bot not available QwQ",chat_id)
                 continue
@@ -380,20 +371,20 @@ def telegram_bot_download_file(file_id, destination=None, chat=None, message=Non
         destination=file_info['result']['file_path'].split('/')[-1]
     if not destination.endswith("."+file_info['result']['file_path'].split(".")[-1]):
         destination+="."+file_info['result']['file_path'].split(".")[-1]
-    os.makedirs(os.path.join("cache","telegram"), exist_ok=True)
-    destination=os.path.join("cache","telegram",destination)
+    os.makedirs(config["Folders"]["Uploads"], exist_ok=True)
+    destination=os.path.join(config["Folders"]["Uploads"],destination)
     if os.path.exists(destination):
         return destination
 
     try:
-        url="https://api.telegram.org/file/bot"+telegram_token+"/"+file_path
+        url="https://api.telegram.org/file/bot"+config["Telegram"]["Token"]+"/"+file_path
         urllib.request.urlretrieve(url, destination)
         if chat is not None and message is not None:
             known_forwards[destination]=(chat,message)
         if destination.lower().split(".")[-1] in ("jpg","jpeg","png","bmp"):
             image = Image.open(destination)
             image.thumbnail((256,256))
-            image.save(os.path.join(os.path.expanduser("~/.cache/thumbnails/large"),get_thumbnail_location(destination)))
+            image.save(os.path.join(os.path.expanduser(config["Folders"]["Thumbnails"]),get_thumbnail_location(destination)))
         return destination
     except urllib.error.HTTPError as e:
         body = json.loads(e.read().decode())  # Read the body of the error response
@@ -405,8 +396,8 @@ pornfolder = []
 
 def download_from_url(url):
     destination=url.split("/")[-1]
-    os.makedirs(os.path.join("cache","telegram"), exist_ok=True)
-    destination=os.path.join("cache","telegram",destination)
+    os.makedirs(config["Folders"]["Uploads"], exist_ok=True)
+    destination=os.path.join(config["Folders"]["Uploads"],destination)
     if os.path.exists(destination):
         return destination
     try:
@@ -461,7 +452,7 @@ def telegram_bot_process_updates():
                         telegram_bot_send_message(text,update["chat"]["id"], [{"type": "italic", "offset": 0, "length": length}])
                         continue
                 if text=="/screenshot":
-                    os.makedirs(os.path.join("cache","screenshot"), exist_ok=True)
+                    os.makedirs(config["Folders"]["Screenshots"], exist_ok=True)
                     filename=list(map(lambda x: get_info(x['filename']),itertools.dropwhile(lambda x: 'current' not in x or not x['current'], player.playlist)))[0]
                     name=filename['title']
                     filename=os.path.join("cache","screenshot","%s-%.2f.png"%(name,player.time_pos))
@@ -516,17 +507,19 @@ def telegram_bot_process_updates():
                         create_player()
                         perform_shuffle()
                     continue
-                if text in commands:
-                    if text in pornfolder:
-                        pornfolder.remove(text)
+                if text[0]=="/" and text[1:].capitalize() in commands:
+                    if text[1:].capitalize() in pornfolder:
+                        pornfolder.remove(text[1:].capitalize())
                         text="%s mode disengaged..."%text[1:].capitalize()
                         length=len(text.encode('utf-16-le'))//2
+                        if len(pornfolder)!=0:
+                            text+="\n\nCurrently engaged modes: %s"%", ".join(list(map(lambda x: x.lower(),pornfolder))).capitalize()
                         telegram_bot_send_message(text,update["chat"]["id"], [{"type": "italic", "offset": 0, "length": length}])
                         continue
                     porny = True
-                    pornfolder.append(text)
+                    pornfolder.append(text[1:].capitalize())
                     if len(pornfolder)>1:
-                        text="%s modes engaged..."%", ".join(list(map(lambda x: x[1:].lower(),pornfolder))).capitalize()
+                        text="%s modes engaged..."%", ".join(list(map(lambda x: x.lower(),pornfolder))).capitalize()
                     else:
                         text="%s mode engaged..."%text[1:].capitalize()
 
@@ -566,7 +559,7 @@ def telegram_bot_process_updates():
                         length=len(text.encode('utf-16-le'))//2
                         telegram_bot_send_message(text, update["chat"]["id"], {"type": "italic", "offset": 0, "length": length})
                         telegram_bot_execute("sendChatAction",{"chat_id":update["chat"]["id"],"action":"typing"})
-                        with yt_dlp.YoutubeDL({"outtmpl":'cache/telegram/%(title)s.%(ext)s'}) as ydl:
+                        with yt_dlp.YoutubeDL({"outtmpl": os.path.join(config["Folders"]["Uploads"],'%(title)s.%(ext)s')}) as ydl:
                             info=ydl.extract_info(filename, download=True)
                             filename = ydl.prepare_filename(info)
                     if watching:
@@ -668,13 +661,9 @@ def telegram_bot_send_message(text, chat, entries=None, silent=False):
     else:
         telegram_bot_execute("sendMessage", {"chat_id": chat, "text": text, "entities": entries, "disable_notification": silent})
 def telegram_bot_send_message_all(text, entries=None, silent=True):
-    global telegram_chats
-    if telegram_chats==[] and os.path.exists(os.path.join("cache","telegram_chats.txt")):
-        with open(os.path.join("cache","telegram_chats.txt")) as f:
-            telegram_chats = f.read().split("\n")
-    for chat in telegram_chats:
+    for chat in config["Telegram"]["Chats"].split(","):
         if chat!="":
-            telegram_bot_send_message(text,chat, entries, silent)
+            telegram_bot_send_message(text, chat, entries, silent)
 
 current_telegram_message = None
 alerted_low_battery = False
@@ -740,6 +729,8 @@ sponsorblock_times=[]
 
 # based on https://github.com/po5/mpv_sponsorblock/blob/master/sponsorblock_shared/sponsorblock.py
 def sponsorblock(video_id):
+    if "Sponsorblock" not in config:
+        return
     global sponsorblock_times
     sponsorblock_times=[]
     VIDEO_ID_REGEX = re.compile(
@@ -755,7 +746,7 @@ def sponsorblock(video_id):
     sha = hashlib.sha256(video_id.encode("utf-8")).hexdigest()[:4]
     times = []
     try:
-        response = urllib.request.urlopen("https://sponsor.ajay.app/api/skipSegments/" + sha)
+        response = urllib.request.urlopen(config["Sponsorblock"]["Url"] + sha)
         segments = json.load(response)
         for segment in segments:
             if sha and video_id != segment["videoID"]:
@@ -774,6 +765,7 @@ def sponsorblock(video_id):
     sponsorblock_times=times
     return times
 
+#TODO: This is really bad
 def is_in_playlist(video):
     global player
     if player == None:
@@ -798,7 +790,7 @@ def html_idify(text):
 
 @functools.cache
 def generate_b64thumb(filename):
-    with open(os.path.expanduser("~/.cache/thumbnails/large/"+filename), "rb") as image_file:
+    with open(os.path.expanduser(os.path.join(config["Folders"]["Thumbnails"],filename)), "rb") as image_file:
         encoded_string = base64.b64encode(image_file.read())
     return "data:image/png;base64, "+encoded_string.decode('ascii')
 
@@ -942,8 +934,8 @@ def get_order(filename):
     return sys.maxsize
 
 def generate_telegrampage(ext=None):
-    files=os.listdir(os.path.join("cache","telegram"))
-    files=list(map(lambda x: os.path.join("cache","telegram",x), files))
+    files=os.listdir(config["Folders"]["Uploads"])
+    files=list(map(lambda x: os.path.join(config["Folders"]["Uploads"],x), files))
     files=sorted(files, key=lambda x: get_order(x))
     html="<h1>Recently uploaded...</h1>"
     html+="<a href=\"/\">Home</a>"
@@ -971,7 +963,7 @@ def get_thumbnail(filename):
     filename=os.path.abspath(filename)
     filename="file://"+filename.replace(" ", "%20")
     filename=hashlib.md5(filename.encode()).hexdigest()+".png"
-    if os.path.exists(os.path.expanduser("~/.cache/thumbnails/large")) and os.path.exists(os.path.expanduser("~/.cache/thumbnails/large/%s"%filename)):
+    if os.path.exists(os.path.expanduser(config["Folders"]["Thumbnails"])) and os.path.exists(os.path.expanduser(os.path.join(config["Folders"]["Thumbnails"],filename))):
         return filename
     return None
 
@@ -1089,16 +1081,16 @@ infolist={}
 def get_ytdlp_info(url, cache, endless=False):
     infolist[url]=cache
     info = None
-    os.makedirs("cache/"+"/".join(cache.split('/')[:-1]), exist_ok=True)
-    if os.path.exists("cache/"+cache):
-        with(open("cache/"+cache) as f):
+    os.makedirs(os.path.join(config["Folders"]["Cache"],"/".join(cache.split('/')[:-1])), exist_ok=True)
+    if os.path.exists(os.path.join(config["Folders"]["Cache"],cache)):
+        with open(os.path.join(config["Folders"]["Cache"],cache)) as f:
             info=json.load(f)
     if info is None or ttl()>info['ttl'] or info['endless']!=endless:
         info=_get_ytdlp_info(url, endless)
         info['ttl']=ttl()+60*15
         info['endless']=endless
-        with(open("cache/"+cache, "w") as f):
-            json.dump(info,f, indent="\t")
+        with open(os.path.join(config["Folders"]["Cache"],cache), "w") as f:
+            json.dump(info, f, indent="\t")
     return info
 
 screenoff=False
@@ -1116,12 +1108,13 @@ def mpv_handle_start(event):
     if player.vo_configured:
         if screenoff:
             player.stop_screensaver="no"
-            if blank:
-                os.system("setterm -blank poke")
+            if blank and "Blanking" in config:
+                os.system(config["Blanking"]["Unblank"])
             screenoff = False
     elif not screenoff:
         player.stop_screensaver="yes"
-        os.system("setterm -blank force")
+        if blank and "Blanking" in config:
+            os.system(config["Blanking"]["Blank"])
         screenoff = True
 
 def mpv_handle_end(event):
@@ -1177,22 +1170,26 @@ def mpv_handle_play(video):
 
 def create_player():
     global player
-    if blank:
-        os.system("setterm -cursor off;setterm -clear;")
+    if blank and "Blanking" in config:
+        os.system(config["Blanking"]["Blank"])
     if player is None:
-        player=mpv.MPV(ytdl=True, image_display_duration=8, ytdl_format="bestvideo[height<=1080]+bestaudio/best[height<=1080]", input_vo_keyboard=True, osc=True, alpha="blend", volume_max=300, profile="sw-fast", slang="en", sub_auto="fuzzy", ytdl_raw_options="ignore-config=,sub-lang=en,write-sub=,write-auto-sub=", sub_visibility=False, hwdec="vaapi", drm_connector="HDMI-A-2")
+        player=mpv.MPV(ytdl=True, image_display_duration=8, ytdl_format=config["Player"]["YtDlpFormat"], input_vo_keyboard=True, osc=True, alpha="blend", volume_max=300, profile=config["Player"]["Profile"], slang=config["Player"]["sLang"], sub_auto="fuzzy", ytdl_raw_options=config["Player"]["YtDlpRawOptions"], sub_visibility=False, hwdec=config["Player"]["HwDec"], drm_connector=config["Player"]["DrmConnector"])
 
-    @player.event_callback('start-file')
-    def start(event):
-        mpv_handle_start(event)
 
-    @player.event_callback('end-file')
-    def end(event):
-        mpv_handle_end(event)
+        #    player.add_periodic_timer(1, telegram_bot_process_updates)
 
-    @player.property_observer('time-pos')
-    def observe_time(_name, value):
-        time_observer(value)
+        @player.event_callback('start-file')
+        def start(event):
+            mpv_handle_start(event)
+
+        @player.event_callback('end-file')
+        def end(event):
+            mpv_handle_end(event)
+
+        @player.property_observer('time-pos')
+        def observe_time(_name, value):
+            time_observer(value)
+            #telegram_bot_process_updates()
 
 def mpv_handle_play_file(path, by_telegram=False):
     get_info(path) #prevents bad paths from entering the queue
@@ -1249,6 +1246,10 @@ def list_tracks(prefix="", folder=MUSIC_FOLDER, excludius=False):
         if "(" in track:
             track=track[:track.index("(")]+"<small>"+track[track.index("("):]+"</small>"
         yield (filename, artist, album, number, track)
+
+@functools.cache
+def regular_list_tracks():
+    return list(list_tracks())
 
 def find_track(filename):
     for root, dirs, files in os.walk(MUSIC_FOLDER, topdown=False):
@@ -1308,21 +1309,25 @@ def generate_music_page():
     html+="<table><thead><tr><th></th><th>Track</th><th><a href='/music/artist'>Artist</a></th>"
     #html+="<th colspan='2'><a href='/music/album'>Album</a></th>"
     html+="</tr></thead><tbody>"
-    for filename, artist, album, number, track in sorted(list_tracks(), key=lambda x: x[-1]):
-        html+=generate_music_row(filename, artist, album, number, track, trackfirst=True)
-    html+="</tbody></table>"
-    return html
+    yield html
+    for filename, artist, album, number, track in sorted(regular_list_tracks(), key=lambda x: x[-1]):
+        yield generate_music_row(filename, artist, album, number, track, trackfirst=True)
+    yield "</tbody></table>"
 
 def generate_artists_page():
     html="<a href='/music/'>Back to music...</a>"
     html+="<table><tbody>"
-    for ele in sorted(filter(lambda x: x is not None,set(map(lambda x: x[1], list_tracks())))):
-        html+="<tr><td><a href=\"%s/\">%s</a></td></tr>"%(ele,ele)
-    html+="</tbody></table>"
-    return html
+    yield html
+    for ele in sorted(filter(lambda x: x is not None,set(map(lambda x: x[1], regular_list_tracks())))):
+        if ele.strip().isnumeric():
+            continue
+        if len(sorted(filter(lambda x: x[1]==ele, regular_list_tracks()), key=lambda x: x[-1]))<6:
+            continue
+        yield "<tr><td><a href=\"%s/\">%s</a></td></tr>"%(ele,ele)
+    yield "</tbody></table>"
 
 def generate_artist_page(artist):
-    albums = sorted(filter(lambda x: x is not None,set(map(lambda x: x[2], filter(lambda x: x[1]==artist, list_tracks())))))
+    albums = sorted(filter(lambda x: x is not None,set(map(lambda x: x[2], filter(lambda x: x[1]==artist, regular_list_tracks())))))
     html=""
     html+="<a href='/music/artist/'>Back to artists...</a>"
     if len(albums)>0:
@@ -1330,23 +1335,27 @@ def generate_artist_page(artist):
         html+="<table><tbody>"
         for ele in albums:
             html+="<tr><td><a href=\"playalbum/%s\"><h2>%s</h2></a>"%(ele, ele)
-            songs = sorted(filter(lambda x: x[1]==artist and x[2]==ele, list_tracks()), key=lambda x: x[-2] if x[-2] is not None else x[-1])
+            songs = sorted(filter(lambda x: x[1]==artist and x[2]==ele, regular_list_tracks()), key=lambda x: x[-2] if x[-2] is not None else x[-1])
             html+="<table><tbody>"
             for song in songs:
                 html+=generate_music_row(*song, trackfirst=None)
             html+="</tbody></table>"
             html+="</td></tr>"
+            yield html
+            html=""
         html+="</tbody></table>"
-    songs = sorted(filter(lambda x: x[1]==artist and x[2] is None, list_tracks()), key=lambda x: x[-1])
+    yield html
+    songs = sorted(filter(lambda x: x[1]==artist and x[2] is None, regular_list_tracks()), key=lambda x: x[-1])
     if len(songs)>0:
+        html=""
         if len(albums)>0:
             html+="<hr/>"
         html+="<h1><small>Songs by </small>%s</h1>"%artist
         html+="<table><tbody>"
+        yield html
         for song in songs:
-            html+=generate_music_row(*song, trackfirst=None)
-        html+="</tbody></table>"
-    return html
+            yield generate_music_row(*song, trackfirst=None)
+        yield "</tbody></table>"
 
 porny=False
 def perform_shuffle(inner=False):
@@ -1359,25 +1368,25 @@ def perform_shuffle(inner=False):
     played_files=set(os.listdir('cache/started'))
     if porny:
         if pornfolder==[]:
-            tracks = list(os.listdir(os.path.join("cache", "telegram")))
+            tracks = list(os.listdir(config["Folders"]["Uploads"]))
         else:
             tracks = []
             for folder in pornfolder:
-                for root, dirs, files in os.walk(commands[folder], topdown=False):
+                for root, dirs, files in os.walk(os.path.expanduser(commands[folder]), topdown=False):
                     for f in files:
                         if f[0]==".":
                             continue
-                        if f.split(".")[-1].lower() not in ('mp4', 'jpg', 'jpeg', 'png', 'gif'):
+                        if f.split(".")[-1].lower() not in config["Shuffle"]["AllowedExtensions"].split(","):
                             continue
                         tracks.append(os.path.join(root,f))
     else:
-        tracks = list(map(lambda x: x[0],list_tracks()))
+        tracks = list(map(lambda x: x[0],regular_list_tracks()))
     random.shuffle(tracks)
     for ele in tracks:
         if not os.path.exists('cache/started/%s.started'%ele.split("/")[-1]):
             if porny:
                 if pornfolder==[]:
-                    mpv_handle_play_file(os.path.join("cache", "telegram",ele), True)
+                    mpv_handle_play_file(os.path.join(config["Folders"]["Uploads"],ele), True)
                 else:
                     mpv_handle_play_file(ele, True)
             else:
@@ -1389,20 +1398,14 @@ def perform_shuffle(inner=False):
         perform_shuffle(True)
     if porny:
         perform_shuffle(True)
-    if not inner:
-        telegram_send_started()
+    #if not inner:
+    #    telegram_send_started()
 
 @app.route("/download/<filename>")
 def download(filename):
     if "/" in filename:
         return
-    return send_from_directory(os.path.join("cache","telegram"), filename)
-
-@app.route("/thumb/<filename>")
-def thumbnail(filename):
-    #if os.path.exists(os.path.expanduser("~/.thumbnails/")) and os.path.exists(os.path.expanduser("~/.thumbnails/%s"%filename)):
-    #    return send_from_directory(os.path.expanduser("~/.thumbnails"), filename)
-    return send_from_directory(os.path.expanduser("~/.cache/thumbnails/large"), filename)
+    return send_from_directory(os.path.join(config["Folders"]["Uploads"], filename))
 
 @app.route("/telegram/", methods=['GET', 'POST'])
 def telegram_page():
@@ -1411,14 +1414,14 @@ def telegram_page():
         if '/' in file.filename:
             return ''
         if file.filename != '':
-            file.save(os.path.join(app.config['UPLOAD_FOLDER'], file.filename))
-            mpv_handle_play_file(os.path.join(app.config['UPLOAD_FOLDER'],file.filename))
+            file.save(os.path.join(config['Folders']["Uploads"], file.filename))
+            mpv_handle_play_file(os.path.join(config['Folders']["Uploads"],file.filename))
         return redirect('/telegram')
     return generate_page(generate_telegrampage(), "Telegram")
 
 @app.route("/telegram/play/<name>")
 def telegram_play(name):
-    mpv_handle_play_file(os.path.join("cache","telegram",name))
+    mpv_handle_play_file(os.path.join(config['Folders']["Uploads"],name))
     return redirect('/telegram/#%s'%name)
 
 @app.route("/telegram/videos/")
@@ -1427,7 +1430,7 @@ def telegram_videopage():
 
 @app.route("/telegram/videos/play/<name>")
 def telegram_videoplay(name):
-    mpv_handle_play_file(os.path.join("cache","telegram",name))
+    mpv_handle_play_file(os.path.join(config['Folders']["Uploads"],name))
     return redirect('/telegram/videos/#%s'%html_idify(name))
 
 @app.route("/music/")
@@ -1467,7 +1470,7 @@ def music_artist_pause(artist):
 
 @app.route("/music/artist/<artist>/playalbum/<name>")
 def music_album_play(artist,name):
-    for ele in sorted(filter(lambda x: x[1]==artist and x[2]==name, list_tracks()), key=lambda x: x[-2] if x[-2] is not None else x[-1]):
+    for ele in sorted(filter(lambda x: x[1]==artist and x[2]==name, regular_list_tracks()), key=lambda x: x[-2] if x[-2] is not None else x[-1]):
         mpv_handle_play_file(find_track(ele[0]))
     return redirect('/music/artist/'+artist)
 
@@ -1585,16 +1588,17 @@ def search(name):
     #    return
     hashname = int.from_bytes(hashlib.sha256(name.encode('utf-8')).digest()[:8], byteorder='big', signed=True)
     info = get_ytdlp_info("ytsearch12:%s"%name, "search/%16x.json"%hashname)
-    songsearch = sorted(set(filter(lambda x: (x[1] is not None and name.lower() in x[1].lower()) or (x[2] is not None and name.lower() in x[2].lower()) or name.lower() in x[-1].lower(), list_tracks())), key=lambda x: list(map(lambda x: "" if x is None else x, x[1:])))
+    songsearch = sorted(set(filter(lambda x: (x[1] is not None and name.lower() in x[1].lower()) or (x[2] is not None and name.lower() in x[2].lower()) or name.lower() in x[-1].lower(), regular_list_tracks())), key=lambda x: list(map(lambda x: "" if x is None else x, x[1:])))
     name=name.replace("<","&gt;").replace("&","&amp;")
     return generate_page(generate_searchpage(info, name, songsearch), "Searched for: %s"%name)
 
-def generate_home_page(index):
-    subscriptions = request.cookies.get('subscriptions')
+def generate_home_page(index, subscriptions):
     windex=int(index)+1
     index=windex*36
     html='<h1>Welcome to Mii\'s Dukebox!</h1>'
     html+='<a href="/music/">Local music</a> - <a href="/telegram/">Uploads</a>'
+    yield html
+    html=""
     if subscriptions is not None:
         subscriptions = set(sorted(subscriptions.split(',')))
         pages = []
@@ -1619,16 +1623,20 @@ def generate_home_page(index):
             for info in page:
                 if not os.path.exists("cache/watched/%s.watched"%info["id"]):
                     html+=generate_description(info, clickable=True)
+                    yield html
+                    html=""
         html+="</section>"
         html+="<h2 style='margin:auto;'><a href='%d'>Load more...</a></h2>"%windex
-    return html
+        yield html
+    #return html
 
 @app.route("/")
 @app.route("/<int:index>")
 def home(index=0):
     if index>99:
         index=0
-    return generate_page(generate_home_page(index), 'Mii\'s Dukebox!')
+    subscriptions=request.cookies.get('subscriptions')
+    return generate_page(generate_home_page(index, subscriptions), 'Mii\'s Dukebox!')
 
 @app.route("/describe/<videoid>/")
 def describe(videoid):
@@ -1667,35 +1675,35 @@ other_thread_stop=False
 def quit(*args, **kwargs):
     global other_thread_stop
     other_thread_stop = True
-    if blank:
-        os.system("setterm -blank poke")
+    if blank and "Blanking" in config:
+        os.system(config["Blanking"]["Unblank"])
     telegram_bot_send_message_all("Goodbye and 'till next time!")
     #if other_thread:
     #    other_thread.terminate()
-    if shutdown:
-        os.system("shutdown 0")
+    if shutdown and "Blanking" in config:
+        os.system(config["Blanking"]["Shutdown"])
     sys.exit(0)
 
 if __name__ == "__main__":
     import signal
-    if blank:
-        os.system("setterm -cursor off;setterm -clear;")
+    if blank and "Blanking" in config:
+        os.system(config["Blanking"]["Init"])
     ip=get_ip()
-    home_url = "%s:5968/"%ip
+    home_url = "%s:%s/"%(ip, config["Server"]["Port"])
     signal.signal(signal.SIGINT, quit)
     signal.signal(signal.SIGTERM, quit)
-    print("connect to %s:5968"%ip)
+    print("connect to %s"%home_url)
     def bot_updates():
         while True:
-          try:
-            telegram_bot_process_updates()
+            try:
+                telegram_bot_process_updates()
+            except Exception as e:
+                print(traceback.format_exc())
             time.sleep(1)
             if other_thread_stop:
                 break
-          except Exception as e:
-            traceback.format_exc()
     other_thread = threading.Thread(target=bot_updates)
     other_thread.daemon = True
     other_thread.start()
     telegram_bot_send_message_all("Good morning my ladies and gents.\n\nTo play a file please visit http://%s or send a file or link!"%home_url)
-    app.run(host=ip, port=5968)
+    app.run(host=ip, port=config["Server"]["Port"])
