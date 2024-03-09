@@ -237,7 +237,7 @@ section.videogrid{
 }
 section.videogrid>figure, #oopnext>div>figure{
     flex-grow: 1;
-    max-width: 320px;
+    max-width: 479px;
     flex-basis: 240px;
     margin: 0;
     margin-bottom: 16px;
@@ -1498,7 +1498,7 @@ def user_subscribe(name):
 @app.route("/<int:index>/play/<video>")
 def home_play(video, index=0):
     mpv_handle_play(video)
-    return redirect('/#%s'%(name, html_idify(video)))
+    return redirect('/#%s'%html_idify(video))
 
 @app.route("/user/<name>/play/<video>")
 def user_play(name, video):
