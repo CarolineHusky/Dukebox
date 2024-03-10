@@ -345,14 +345,14 @@ user_update_lock=None
 
 def telegram_bot_get_updates():
     if not "Telegram" in config:
-        return
-    updates=telegram_bot_execute("getUpdates", {"offset": int(config["Telegram"]["LastUpdate"])+1, "allowed_updates": ["message"]})["result"]
+        return []
+    updates=telegram_bot_execute("getUpdates", {"offset": int(config["Telegram"]["LastUpdate"])+1, "allowed_updates": ["message", "callback_query"]})["result"]
     for update in updates:
         if update['update_id']>int(config["Telegram"]["LastUpdate"]):
             config["Telegram"]["LastUpdate"] = str(update['update_id'])
             with open("config.ini", "w") as f:
                 config.write(f)
-        if "chat" in update["message"]:
+        if "message" in update and "chat" in update["message"]:
             chat_id=str(update["message"]["chat"]["id"])
             if chat_id not in config["Telegram"]["Chats"]:
                 config["Telegram"]["Chats"]+=","+str(chat_id)
@@ -362,7 +362,12 @@ def telegram_bot_get_updates():
             if user_update_lock is not None and str(chat_id)!=str(user_update_lock):
                 telegram_bot_send_message("UwU Bot not available QwQ",chat_id)
                 continue
-        yield update["message"]
+        if "message" in update:
+            yield update["message"]
+        elif "callback_query" in update:
+            callback_query=update["callback_query"]
+            telegram_bot_process_callback(update["callback_query"]["data"])
+            telegram_bot_execute("answerCallbackQuery",{"callback_query_id": callback_query["id"]})
 
 def telegram_bot_download_file(file_id, destination=None, chat=None, message=None):
     file_info=telegram_bot_execute("getFile", {"file_id": file_id})
@@ -409,6 +414,28 @@ def download_from_url(url):
         print(body)
         raise
 
+def telegram_bot_process_callback(command):
+    global shuffle
+    create_player()
+    if not blank:
+        print(command)
+    if command=="/next":
+        player.playlist_next("force")
+        if shuffle:
+            perform_shuffle()
+    if command=="/pause":
+        player.pause = True
+    if command=="/play":
+        if shuffle:
+            perform_shuffle()
+        player.pause = False
+    if command=="/shuffle":
+        shuffle = True
+        player.pause = False
+        perform_shuffle()
+    if command=="/noshuffle":
+        shuffle = False
+    telegram_send_started(True)
 
 def telegram_bot_process_updates():
     global shuffle
@@ -474,7 +501,7 @@ def telegram_bot_process_updates():
                     continue
                 if text=="/next":
                     create_player()
-                    player.playlist_next()
+                    player.playlist_next("force")
                     continue
                 if text=="/pause":
                     create_player()
@@ -677,26 +704,52 @@ last_global_messages=None
 
 def telegram_bot_send_message_all(text, entries=None, silent=True, pinned=True):
     global last_global_messages
+    global shuffle
+    global current_telegram_message
+
+    if pinned:
+        firstrow=[]
+        if player is not None:
+            if not player.pause:
+                firstrow.append({"text": "Pause", "callback_data": "/pause"})
+            else:
+                firstrow.append({"text": "Play", "callback_data": "/play"})
+        if shuffle:
+            firstrow.append({"text": "Stop shuffle", "callback_data": "/noshuffle"})
+        else:
+            firstrow.append({"text": "Shuffle", "callback_data": "/shuffle"})
+        if player is not None and len(player.playlist)>0 and not player.pause:
+            firstrow.append({"text": "Next", "callback_data": "/next"})
+        keyboard=[firstrow, [{"text": "Browse...", "url": home_url}]]
     if last_global_messages is not None and pinned:
+        if (text,keyboard)==current_telegram_message:
+            return
+        current_telegram_message = (text,keyboard)
         for message, chat in last_global_messages:
             if entries is None:
-                telegram_bot_execute("editMessageText", {"chat_id": chat, "message_id": message, "text":text})
+                telegram_bot_execute("editMessageText", {"chat_id": chat, "message_id": message, "text":text, "reply_markup": {"inline_keyboard": keyboard}})
             else:
-                telegram_bot_execute("editMessageText", {"chat_id": chat, "message_id": message, "text": text, "entities": entries})
+                telegram_bot_execute("editMessageText", {"chat_id": chat, "message_id": message, "text": text, "entities": entries, "reply_markup": {"inline_keyboard": keyboard}})
         return
+
     if pinned:
         last_global_messages = []
     for chat in config["Telegram"]["Chats"].split(","):
         if chat!="":
-            result = telegram_bot_send_message(text, chat, entries, silent)["result"]
+            if not pinned:
+                result = telegram_bot_send_message(text, chat, entries, silent)["result"]
+            else:
+                if entries is None:
+                    result=telegram_bot_execute("sendMessage", {"chat_id": chat, "text":text, "reply_markup": {"inline_keyboard": keyboard}})["result"]
+                else:
+                    result=telegram_bot_execute("sendMessage", {"chat_id": chat, "text": text, "entities": entries, "reply_markup": {"inline_keyboard": keyboard}})["result"]
             if pinned:
-                nagware=telegram_bot_execute("pinChatMessage",{"chat_id":result["chat"]["id"], "message_id":result["message_id"], "disable_notification":True})
-                last_global_messages.append((result["message_id"],result["chat"]["id"]))
+                telegram_bot_execute("pinChatMessage",{"chat_id":chat, "message_id":result["message_id"], "disable_notification":True})
+                last_global_messages.append((result["message_id"],chat))
 
 current_telegram_message = None
 alerted_low_battery = False
 def telegram_send_started(silent=True):
-    global current_telegram_message
     global alerted_low_battery
     playlist=list(map(lambda x: get_info(x['filename']),itertools.dropwhile(lambda x: 'current' not in x or not x['current'], player.playlist)))
     text=""
@@ -740,9 +793,6 @@ def telegram_send_started(silent=True):
         text+="And then shuffle...\n"
         length=len(text.encode('utf-16-le'))//2-offset
         entities.append({"type": "italic", "offset": offset, "length": length})
-    if text==current_telegram_message:
-        return
-    current_telegram_message = text
     text+="\n"
     text+="For sheduling new media visit "
     offset=len(text.encode('utf-16-le'))//2
@@ -1217,6 +1267,10 @@ def create_player():
         @player.event_callback('end-file')
         def end(event):
             mpv_handle_end(event)
+
+        @player.property_observer('pause')
+        def observe_pause(_name, value):
+            telegram_send_started(True)
 
         @player.property_observer('time-pos')
         def observe_time(_name, value):
