@@ -416,6 +416,7 @@ def telegram_bot_process_updates():
     global porny
     global user_update_lock
     has_updates=False
+    important_command=False
     for update in telegram_bot_get_updates():
         for ele in update:
             if ele=="text":
@@ -426,14 +427,17 @@ def telegram_bot_process_updates():
                     player.volume = max(0, min(300,int(text.split(" ")[-1])))
                     continue
                 if text.startswith("/speed"):
+                    important_command=True
                     player.speed = float(text.lstrip("/speed "))
                     continue
                 if text.startswith("/sub"):
+                    important_command=True
                     player['sub-visibility']=True
                     if len(text)>4:
                         player['slang']=text[4:]
                     continue
                 if text=="/dub":
+                    important_command=True
                     player['sub-visibility']=False
                     continue
                 if text=="/private":
@@ -493,9 +497,9 @@ def telegram_bot_process_updates():
                             if "offset" in entity:
                                 entity["offset"]=max(0,entity["offset"]-5+len(basetext))
                             entities.append(entity)
-                        telegram_bot_send_message_all(text, entities)
+                        telegram_bot_send_message_all(text, entities, pinned=False)
                     else:
-                        telegram_bot_send_message_all(text)
+                        telegram_bot_send_message_all(text, pinned=False)
                     continue
                 if text=="/porny":
                     porny = True
@@ -554,6 +558,8 @@ def telegram_bot_process_updates():
                     if filename=="":
                         filename=list(map(lambda x: x['filename'],itertools.dropwhile(lambda x: 'current' not in x or not x['current'], player.playlist)))[0]
                         watching=True
+                    else:
+                        important_command=True
                     if not (filename.startswith("/") or filename.startswith("cache")):
                         text="Downloading..."
                         length=len(text.encode('utf-16-le'))//2
@@ -585,6 +591,7 @@ def telegram_bot_process_updates():
                     has_updates=True
                     continue
                 if text=="/oofvideo":
+                    important_command=True
                     mpv_handle_play_file(
                         "https://www.youtube.com/watch?v=0twDETh6QaI",
                         True)
@@ -595,6 +602,7 @@ def telegram_bot_process_updates():
                     quit()
                     continue
                     #if len(text)>6:
+                important_command=True
                 for e in extractor.list_extractor_classes():
                     if e.working() and e.suitable(text) and e.IE_NAME != "generic":
                         try:
@@ -621,6 +629,7 @@ def telegram_bot_process_updates():
                         else:
                             telegram_bot_send_message("Sorry, can't handle this URL or command...",update["chat"]["id"])
             elif isinstance(update[ele],dict) and "file_id" in update[ele]:
+                important_command=True
                 telegram_bot_execute("sendChatAction",{"chat_id":update["chat"]["id"],"action":"typing"})
                 try:
                     if "file_name" in update[ele]:
@@ -637,6 +646,7 @@ def telegram_bot_process_updates():
                 except ValueError:
                     telegram_bot_send_message("Sorry, this file is too big.\nThese simple bots support files up to 20MB...",update["chat"]["id"])
             elif ele=="photo":
+                important_command=True
                 telegram_bot_execute("sendChatAction",{"chat_id":update["chat"]["id"],"action":"typing"})
                 photos=sorted(update[ele], key=lambda p:-p["height"])
                 bestphoto=photos[0]
@@ -650,6 +660,8 @@ def telegram_bot_process_updates():
                     download_file=telegram_bot_download_file(bestphoto['file_id'], None, update["chat"]["id"], update["message_id"])
                 mpv_handle_play_file(download_file, True)
                 has_updates=True
+        if not important_command:
+            telegram_bot_execute("deleteMessage",{"message_id":update["message_id"],"chat_id":update["chat"]["id"]})
     if has_updates:
         telegram_send_started(True)
 
@@ -657,13 +669,29 @@ def telegram_bot_process_updates():
 
 def telegram_bot_send_message(text, chat, entries=None, silent=False):
     if entries is None:
-        telegram_bot_execute("sendMessage", {"chat_id": chat, "text": text, "disable_notification": silent})
+        return telegram_bot_execute("sendMessage", {"chat_id": chat, "text": text, "disable_notification": silent})
     else:
-        telegram_bot_execute("sendMessage", {"chat_id": chat, "text": text, "entities": entries, "disable_notification": silent})
-def telegram_bot_send_message_all(text, entries=None, silent=True):
+        return telegram_bot_execute("sendMessage", {"chat_id": chat, "text": text, "entities": entries, "disable_notification": silent})
+
+last_global_messages=None
+
+def telegram_bot_send_message_all(text, entries=None, silent=True, pinned=True):
+    global last_global_messages
+    if last_global_messages is not None and pinned:
+        for message, chat in last_global_messages:
+            if entries is None:
+                telegram_bot_execute("editMessageText", {"chat_id": chat, "message_id": message, "text":text})
+            else:
+                telegram_bot_execute("editMessageText", {"chat_id": chat, "message_id": message, "text": text, "entities": entries})
+        return
+    if pinned:
+        last_global_messages = []
     for chat in config["Telegram"]["Chats"].split(","):
         if chat!="":
-            telegram_bot_send_message(text, chat, entries, silent)
+            result = telegram_bot_send_message(text, chat, entries, silent)["result"]
+            if pinned:
+                nagware=telegram_bot_execute("pinChatMessage",{"chat_id":result["chat"]["id"], "message_id":result["message_id"], "disable_notification":True})
+                last_global_messages.append((result["message_id"],result["chat"]["id"]))
 
 current_telegram_message = None
 alerted_low_battery = False
@@ -933,17 +961,20 @@ def get_order(filename):
         return sys.maxsize-os.path.getmtime(startfile)
     return sys.maxsize
 
-def generate_telegrampage(ext=None):
+def generate_telegrampage(ext=None, downloads=False):
     files=os.listdir(config["Folders"]["Uploads"])
     files=list(map(lambda x: os.path.join(config["Folders"]["Uploads"],x), files))
     files=sorted(files, key=lambda x: get_order(x))
     html="<h1>Recently uploaded...</h1>"
     html+="<a href=\"/\">Home</a>"
-    if ext is None:
-        html+=" - <a href=\"/telegram/videos\">Videos</a><br/><br/>"
+    if downloads:
+        html+=" - <a href=\"/telegram\">Back...</a><br/><br/>"
+    elif ext is None:
+        html+=" - <a href=\"/telegram/videos\">Videos</a>"
+        html+=" - <a href=\"/download\">Download</a><br/><br/>"
     else:
         html+=" - <a href=\"/telegram\">All uploads</a><br/><br/>"
-    if ext is None:
+    if ext is None and not downloads:
         html+="""<form method="post"" enctype="multipart/form-data"><input type="file" name="file"></input><input type="submit" value="Upload file..."></input></form>"""
     html+="<section class='videogrid'>"
     yield html
@@ -1116,6 +1147,7 @@ def mpv_handle_start(event):
         if blank and "Blanking" in config:
             os.system(config["Blanking"]["Blank"])
         screenoff = True
+    telegram_send_started()
 
 def mpv_handle_end(event):
     if event.data.reason==0: #EOF
@@ -1144,7 +1176,7 @@ def time_observer(value):
                 get_ytdlp_info(url,infolist[url])
         battery = psutil.sensors_battery()
         if player is not None and player.playtime_remaining is not None and battery.power_plugged!=True and battery.secsleft<player.playtime_remaining and not alerted_low_battery:
-            telegram_bot_send_message_all("\u26A0\U0001FAAB Battery empty in %02d:%02d! \U0001FAAB\u26A0"%divmod(battery.secsleft, 60))
+            telegram_bot_send_message_all("\u26A0\U0001FAAB Battery empty in %02d:%02d! \U0001FAAB\u26A0"%divmod(battery.secsleft, 60), pinned=False)
             alerted_low_battery = True
 
 
@@ -1204,8 +1236,7 @@ def mpv_handle_play_file(path, by_telegram=False):
         player.play(path)
     else:
         player.playlist_append(path)
-    if not by_telegram:
-        telegram_send_started()
+    telegram_send_started()
 
 def mpv_handle_pause():
     global player
@@ -1398,14 +1429,22 @@ def perform_shuffle(inner=False):
         perform_shuffle(True)
     if porny:
         perform_shuffle(True)
-    #if not inner:
-    #    telegram_send_started()
+    if not inner:
+        telegram_send_started()
 
 @app.route("/download/<filename>")
 def download(filename):
     if "/" in filename:
         return
-    return send_from_directory(os.path.join(config["Folders"]["Uploads"], filename))
+    return send_from_directory(config["Folders"]["Uploads"], filename)
+
+@app.route("/download/")
+def telegram_download():
+    return generate_page(generate_telegrampage(None, True), "Download")
+
+@app.route("/download/play/<filename>")
+def telegram_download_play(filename):
+    return redirect('/download/'+filename)
 
 @app.route("/telegram/", methods=['GET', 'POST'])
 def telegram_page():
@@ -1506,7 +1545,7 @@ def home_play(video, index=0):
 @app.route("/user/<name>/play/<video>")
 def user_play(name, video):
     mpv_handle_play(video)
-    return redirect('/user/%s/#v%s'%(name, video))
+    return redirect('/user/%s/#%s'%(name, video))
 
 @app.route("/user/<name>/endless/play/<video>")
 def user_play_endless(name, video):
@@ -1677,7 +1716,10 @@ def quit(*args, **kwargs):
     other_thread_stop = True
     if blank and "Blanking" in config:
         os.system(config["Blanking"]["Unblank"])
-    telegram_bot_send_message_all("Goodbye and 'till next time!")
+    telegram_bot_send_message_all("Goodbye and 'till next time!", pinned=False)
+    for message, chat in last_global_messages:
+        telegram_bot_execute("unpinAllChatMessages", {"chat_id": chat})
+        telegram_bot_execute("deleteMessage",{"message_id":message,"chat_id":chat})
     #if other_thread:
     #    other_thread.terminate()
     if shutdown and "Blanking" in config:
@@ -1705,5 +1747,10 @@ if __name__ == "__main__":
     other_thread = threading.Thread(target=bot_updates)
     other_thread.daemon = True
     other_thread.start()
-    telegram_bot_send_message_all("Good morning my ladies and gents.\n\nTo play a file please visit http://%s or send a file or link!"%home_url)
+    text="Good morning my ladies and gents."
+    telegram_bot_send_message_all("Good morning my ladies and gents.", pinned=False)
+    telegram_bot_send_message_all("To play a file please visit http://%s or send a file or link!"%home_url)
+    text="This bot is for managing the media player at @MiifoxNew's home. Send files to it or have fun!"
+    telegram_bot_execute("setMyDescription", {"language_code":"en", "description":text})
+    telegram_bot_execute("setMyShortDescription", {"language_code":"en", "short_description":text})
     app.run(host=ip, port=config["Server"]["Port"])
