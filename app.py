@@ -437,11 +437,14 @@ def telegram_bot_process_callback(command):
         shuffle = False
     telegram_send_started(True)
 
+hook_sticker_state={}
+
 def telegram_bot_process_updates():
     global shuffle
     global shutdown
     global porny
     global user_update_lock
+    global hook_sticker_state
     has_updates=False
     important_command=False
     for update in telegram_bot_get_updates():
@@ -567,6 +570,10 @@ def telegram_bot_process_updates():
                     length=len(text.encode('utf-16-le'))//2
                     telegram_bot_send_message(text,update["chat"]["id"], [{"type": "italic", "offset": 0, "length": length}])
                     continue
+                if text=="/hook":
+                    hook_sticker_state[update["chat"]["id"]]=player.path
+                    telegram_bot_send_message("Please send the sticker to bind to the currently playing file...", update["chat"]["id"])
+                    continue
                 if text=="." and player.pause:
                     player.frame_step()
                     continue
@@ -662,13 +669,26 @@ def telegram_bot_process_updates():
                     if "file_name" in update[ele]:
                         download_file=telegram_bot_download_file(update[ele]["file_id"],update[ele]["file_name"], update["chat"]["id"], update["message_id"])
                     elif "set_name" in update[ele] and "emoji" in update[ele]:
-                        download_file=telegram_bot_download_file(update[ele]["file_id"],update[ele]["set_name"]+" "+update[ele]["emoji"], update["chat"]["id"], update["message_id"])
+                        if update["chat"]["id"] in hook_sticker_state:
+                            if not "StickerHooks" in config:
+                                config["StickerHooks"]={}
+                            config["StickerHooks"][update[ele]["file_unique_id"]]=hook_sticker_state[update["chat"]["id"]]
+                            del hook_sticker_state[update["chat"]["id"]]
+                            with open("config.ini", "w") as f:
+                                config.write(f)
+                            telegram_bot_send_message("Fantastic, binding set!", update["chat"]["id"])
+                            download_file=None
+                        elif update[ele]["file_unique_id"] in config["StickerHooks"]:
+                            download_file=config["StickerHooks"][update[ele]["file_unique_id"]]
+                        else:
+                            download_file=telegram_bot_download_file(update[ele]["file_id"],update[ele]["set_name"]+" "+update[ele]["emoji"], update["chat"]["id"], update["message_id"])
                     elif "file_unique_id" in update[ele]:
                         download_file=telegram_bot_download_file(update[ele]["file_id"],update[ele]["file_unique_id"], update["chat"]["id"], update["message_id"])
                     else:
                         download_file=telegram_bot_download_file(update[ele]["file_id"], None, update["chat"]["id"], update["message_id"])
-                    mpv_handle_play_file(download_file, True)
-                    has_updates=True
+                    if download_file is not None:
+                        mpv_handle_play_file(download_file, True)
+                        has_updates=True
                     #print(download_file)
                 except ValueError:
                     telegram_bot_send_message("Sorry, this file is too big.\nThese simple bots support files up to 20MB...",update["chat"]["id"])
@@ -1081,6 +1101,20 @@ def get_info(videourl):
         raise
     return info
 
+def get_safe_playlist():
+    current=False
+
+    for ele in player.playlist:
+        if 'current' in ele and ele['current']:
+            current = True
+        if current:
+            try:
+                yield get_info(ele['filename'])
+            except Exception as e:
+                print(traceback.format_exc())
+    if not current:
+        return []
+
 def generate_page(page, title):
     html="<html><head><title>%s</title><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"%title#<link rel=\"stylesheet\" href=\"/style.css\">"%title
     html+="<style>"+style()+"</style>"
@@ -1090,7 +1124,7 @@ def generate_page(page, title):
     html+="<header><input id='search'/><button id='searchbutton'>Search YT</button>"
     html+="</header>"
     if player is not None:
-        playlist=list(map(lambda x: get_info(x['filename']),itertools.dropwhile(lambda x: 'current' not in x or not x['current'], player.playlist)))
+        playlist=list(get_safe_playlist())
         if len(playlist)>0:
             html+="<footer><div>"
             html+="<details id='oopnext'><summary>Currently playing"
@@ -1111,6 +1145,14 @@ def generate_page(page, title):
                 html+="<a id='resume' href='pause'>Pause</a>"
             html+="<input type='range' id='volume' min='0' max='100' value='%d'/>"%player.volume
             html+="</div></footer>"
+    html+="""
+<script>
+var volume = document.getElementById('volume');
+volume.addEventListener("change", function(event) {
+    fetch('/volume/'+volume.value).then((response) => {});
+});
+</script>
+    """.replace('\n','')
     html+="<main>"
     yield html
     if hasattr(page, '__iter__') and not hasattr(page, '__len__'):
@@ -1137,10 +1179,6 @@ searchbutton.addEventListener("click", function(event) {
     if(search.value){
         window.location.href = '/search/'+ search.value;
     }
-});
-var volume = document.getElementById('volume');
-volume.addEventListener("change", function(event) {
-    fetch('/volume/'+volume.value).then((response) => {});
 });
 </script>
 """.replace('\n','')
@@ -1206,6 +1244,10 @@ def mpv_handle_end(event):
         if len(filename)<1:
             return
         filename = filename[0]['filename']
+        if filename in known_forwards:
+            chat, message = known_forwards[filename]
+            telegram_bot_execute("deleteMessage",{"message_id":message,"chat_id":chat})
+            del known_forwards[filename]
         filename=filename.split('/')[-1]
         open('cache/watched/%s.watched'%filename, 'a').close()
         perform_shuffle()
