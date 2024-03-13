@@ -680,8 +680,20 @@ def telegram_bot_process_updates():
                             download_file=None
                         elif update[ele]["file_unique_id"] in config["StickerHooks"]:
                             download_file=config["StickerHooks"][update[ele]["file_unique_id"]]
+                            important_command=False
                         else:
                             download_file=telegram_bot_download_file(update[ele]["file_id"],update[ele]["set_name"]+" "+update[ele]["emoji"], update["chat"]["id"], update["message_id"])
+                        if player is not None and download_file is not None:
+                            playlist=get_safe_playlist()
+                            try:
+                                _ = next(playlist)
+                            except StopIteration:
+                                pass
+                            playlist=list(playlist)
+                            player.play(download_file)
+                            for ele in playlist:
+                                player.playlist_append(ele["id"])
+                            continue
                     elif "file_unique_id" in update[ele]:
                         download_file=telegram_bot_download_file(update[ele]["file_id"],update[ele]["file_unique_id"], update["chat"]["id"], update["message_id"])
                     else:
