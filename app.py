@@ -232,7 +232,7 @@ img {
 }
 section.videogrid{
     overflow-y: hidden;
-    width: 100vw;
+    width: 100%;
     display: flex;
     flex-wrap: wrap;
     margin-top: 1em;
@@ -247,6 +247,7 @@ section.videogrid>figure, #oopnext>div>figure{
     margin-bottom: 16px;
 }
 figure details summary{
+    display: block;
     padding: 4px;
     background: linear-gradient(
         rgba(24,24,24, .75),
@@ -401,6 +402,8 @@ pornfolder = []
 
 def download_from_url(url):
     destination=url.split("/")[-1]
+    from urllib.parse import unquote
+    destination=unquote(destination)
     os.makedirs(config["Folders"]["Uploads"], exist_ok=True)
     destination=os.path.join(config["Folders"]["Uploads"],destination)
     if os.path.exists(destination):
@@ -818,7 +821,7 @@ def telegram_send_started(silent=True):
             length=len(text.encode('utf-16-le'))//2-offset
             entities.append({"type": "text_link", "offset": offset, "length": length, "url": entry['tumblr_url']})
         text+="\n"
-    if text=="":
+    if text=="" and not player.idle_active:
         return
     if shuffle:
         offset=len(text.encode('utf-16-le'))//2
@@ -848,6 +851,8 @@ def sponsorblock(video_id):
 )
     video_id_match = VIDEO_ID_REGEX.match(video_id)
     if video_id_match is None:
+        return
+    if not video_id.startswith("https://"):
         return
     video_id = video_id_match.group(5)
     opener = urllib.request.build_opener()
@@ -977,9 +982,9 @@ def generate_description(info, uploader=None, clickable=False, mainpage=True):
     html+="<strong>%s</strong>"%title
     if uploader is None and 'uploader' in info:
         if 'uploader_id' in info and info['uploader_id'] is not None:
-            html+=' <a href="/user/%s">%s</a>'%(info['uploader_id'][1:],info['uploader'])
+            html+=' <a href="/user/%s/">%s</a>'%(info['uploader_id'][1:],info['uploader'])
         elif 'channel_id' in info and info['channel_id'] is not None:
-            html+=' <a href="/channel/%s">%s</a>'%(info['channel_id'],info['uploader'])
+            html+=' <a href="/channel/%s/">%s</a>'%(info['channel_id'],info['uploader'])
     if not info['id'].startswith("/") and not info['id'].startswith("cache"):
         html+="</summary>"
         html+="<span>"
@@ -992,10 +997,9 @@ def generate_description(info, uploader=None, clickable=False, mainpage=True):
     html+="</figcaption></figure>"
     return html
 
-def generate_channelpage(info, endless=False):
+def generate_channelpage(info, endless=False, subscriptions=None):
     html="<h1>%s</h1>"%(info['channel'])
 
-    subscriptions = request.cookies.get('subscriptions')
     if subscriptions is not None and info['uploader_id'][1:].lower().replace(' ','') in subscriptions.split(','):
         html+="<a href='subscribe'>Unsubscribe</a>"
     else:
@@ -1005,11 +1009,13 @@ def generate_channelpage(info, endless=False):
     html+=info['description'].replace('\n','<br/>')
     html+="</p>"
     html+="<section class='videogrid'>"
+    yield html
+    html=""
     for ele in info['entries']:
-        html+=generate_description(ele, uploader=info['channel'], clickable=True)
+        yield generate_description(ele, uploader=info['channel'], clickable=True)
+    yield "</section>"
     if not endless and len(info['entries'])>=36:
-        html+="<h2 style='margin:auto;'><a href='endless'>Load all...</a></h2>"
-    html+="</section>"
+        yield "<h2 style='margin:auto;'><a href='endless/#%s'>Load all...</a></h2>"%html_idify(info['entries'][-1]['id'])
     return html
 
 def generate_searchpage(info,searchterm, songsearch):
@@ -1030,10 +1036,10 @@ def generate_searchpage(info,searchterm, songsearch):
     return html
 
 def get_order(filename):
-    if player is not None:
-        playlist=list(map(lambda x: x['filename'], player.playlist))
-        if filename in playlist:
-            return -playlist.index(filename)
+    #if player is not None:
+    #    playlist=list(map(lambda x: x['filename'], player.playlist))
+    #    if filename in playlist:
+    #        return -playlist.index(filename)
     filename=filename.split("/")[-1]
     startfile=os.path.join("cache","started", filename+".started")
     if os.path.exists(startfile):
@@ -1050,12 +1056,12 @@ def generate_telegrampage(ext=None, downloads=False):
     html="<h1>Recently uploaded...</h1>"
     html+="<a href=\"/\">Home</a>"
     if downloads:
-        html+=" - <a href=\"/telegram\">Back...</a><br/><br/>"
+        html+=" - <a href=\"/telegram/\">Back...</a><br/><br/>"
     elif ext is None:
-        html+=" - <a href=\"/telegram/videos\">Videos</a>"
-        html+=" - <a href=\"/download\">Download</a><br/><br/>"
+        html+=" - <a href=\"/telegram/videos/\">Videos</a>"
+        html+=" - <a href=\"/download/\">Download</a><br/><br/>"
     else:
-        html+=" - <a href=\"/telegram\">All uploads</a><br/><br/>"
+        html+=" - <a href=\"/telegram/\">All uploads</a><br/><br/>"
     if ext is None and not downloads:
         html+="""<form method="post"" enctype="multipart/form-data"><input type="file" name="file"></input><input type="submit" value="Upload file..."></input></form>"""
     html+="<section class='videogrid'>"
@@ -1086,18 +1092,19 @@ def get_info(videourl):
     if not videourl.startswith("http"):
         thumbnail=get_thumbnail(videourl)
         name = videourl.split("/")[-1]
+        name_regular = name.replace("%20"," ").replace("_"," ")
         if videourl.split("/")[-2].lower() == "tumblr":
             breakdown=name.split(".")[0].split("_")
             if len(breakdown)>1:
                 tumblr_url="https://www.tumblr.com/%s/%s"%(breakdown[0],breakdown[1])
                 if thumbnail is None:
-                    return {'title': name, 'id': videourl, 'tumblr_url': tumblr_url, 'telegram_thumbnail':thumbnail}
+                    return {'title': name_regular, 'id': videourl, 'tumblr_url': tumblr_url, 'telegram_thumbnail':thumbnail}
                 else:
-                    return {'title': name, 'id': videourl, 'tumblr_url': tumblr_url}
+                    return {'title': name_regular, 'id': videourl, 'tumblr_url': tumblr_url}
         if thumbnail is None:
-            return {'title': name, 'id': videourl}
+            return {'title': name_regular, 'id': videourl}
         else:
-            return {'title': name, 'id': videourl, 'telegram_thumbnail': thumbnail}
+            return {'title': name_regular, 'id': videourl, 'telegram_thumbnail': thumbnail}
     videoid=""
     for e in extractor.list_extractor_classes():
         if e.working() and e.suitable(videourl) and e.IE_NAME != "generic":
@@ -1234,6 +1241,8 @@ def mpv_handle_start(event):
     filename = list(filter(lambda x: x['id']==event.data.playlist_entry_id, player.playlist))[0]['filename']
     sponsorblock(filename)
     filename=filename.split('/')[-1]
+    if os.path.exists('cache/started/%s.started'%filename):
+        os.remove('cache/started/%s.started'%filename)
     open('cache/started/%s.started'%filename, 'a').close()
 
     if player.vo_configured:
@@ -1324,6 +1333,10 @@ def create_player():
 
         @player.property_observer('pause')
         def observe_pause(_name, value):
+            telegram_send_started(True)
+
+        @player.property_observer('idle-active')
+        def observe_idle(_name, value):
             telegram_send_started(True)
 
         @player.property_observer('time-pos')
@@ -1666,15 +1679,16 @@ def user(name):
         return
     name=name.lower()
     info = get_ytdlp_info("https://www.youtube.com/@%s/videos"%name, "user/%s.json"%name)
-    return generate_page(generate_channelpage(info), info['channel'])
+    return generate_page(generate_channelpage(info,
+    subscriptions = request.cookies.get('subscriptions')), info['channel'])
 
-@app.route("/user/<name>/endless")
+@app.route("/user/<name>/endless/")
 def user_endless(name):
     if '..' in name or '/' in name:
         return
     name=name.lower()
     info = get_ytdlp_info("https://www.youtube.com/@%s/videos"%name, "user/%s.json"%name, True)
-    return generate_page(generate_channelpage(info, True), info['channel'])
+    return generate_page(generate_channelpage(info, True, request.cookies.get('subscriptions')), info['channel'])
 
 @app.route("/channel/<name>/play/<video>")
 def channel_play(name, video):
