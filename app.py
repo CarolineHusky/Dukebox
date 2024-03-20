@@ -22,6 +22,7 @@ from PIL import Image
 import configparser
 
 config=configparser.ConfigParser()
+config.optionxform=str
 config.read('config.ini')
 
 blank=True
@@ -315,6 +316,10 @@ def telegram_bot_send_document(chat, filename):
         else:
             response=requests.post(url, data={'chat_id': chat}, files={'video': open(filename,"rb")})
         return response
+    if filename.lower().endswith(".jpg") or filename.lower().endswith(".png"):
+        url+="/sendPhoto"
+        response=requests.post(url, data={'chat_id': chat}, files={'photo': open(filename,"rb")})
+        return response
     if filename.lower().endswith(".ogg"):
         url+="/sendVoice"
         response=requests.post(url, data={'chat_id': chat}, files={'voice': open(filename,"rb")})
@@ -367,7 +372,7 @@ def telegram_bot_get_updates():
             yield update["message"]
         elif "callback_query" in update:
             callback_query=update["callback_query"]
-            telegram_bot_process_callback(update["callback_query"]["data"])
+            telegram_bot_process_callback(update["callback_query"]["data"], str(update["callback_query"]["from"]["id"]))
             telegram_bot_execute("answerCallbackQuery",{"callback_query_id": callback_query["id"]})
 
 def telegram_bot_download_file(file_id, destination=None, chat=None, message=None):
@@ -417,254 +422,250 @@ def download_from_url(url):
         print(body)
         raise
 
-def telegram_bot_process_callback(command):
-    global shuffle
-    create_player()
-    if not blank:
-        print(command)
-    if command=="/next":
-        player.playlist_next("force")
-        if shuffle:
-            perform_shuffle()
-    if command=="/pause":
-        player.pause = True
-    if command=="/play":
-        if shuffle:
-            perform_shuffle()
-        player.pause = False
-    if command=="/shuffle":
-        shuffle = True
-        player.pause = False
-        perform_shuffle()
-    if command=="/noshuffle":
-        shuffle = False
+def telegram_bot_process_callback(command,chat_id):
+    bot_command(command, chat_id)
     telegram_send_started(True)
 
 hook_sticker_state={}
 
-def telegram_bot_process_updates():
+def play_url(text):
+    print(text)
+    for e in extractor.list_extractor_classes():
+        if e.working() and e.suitable(text) and e.IE_NAME != "generic":
+            try:
+                mpv_handle_play_file(text, True)
+                break
+            except Exception as e:
+                if type(e.exc_info[1]) is yt_dlp.utils.ExtractorError:
+                    return e.exc_info[1].orig_msg
+                else:
+                    return "Sorry, this URL is currently broken..."
+    else:
+        try:
+            get_info(text, text.replace("/","-"))
+            mpv_handle_play_file(text, True)
+        except Exception:
+            if text.startswith("http") and text.split(".")[-1] in ALLOWED_EXTENSIONS:
+                destination=download_from_url(text)
+                mpv_handle_play_file(destination, True)
+            else:
+                return "Sorry, can't handle this URL or command..."
+
+def bot_command(text, chat_id):
     global shuffle
     global shutdown
     global porny
     global user_update_lock
+    global hook_sticker_state
+    if not blank:
+        print("[telegram bot] "+text)
+    if text.startswith("/vol"):
+        player.volume = max(0, min(300,int(text.split(" ")[-1])))
+        return False
+    if text.startswith("/speed"):
+        player.speed = float(text.lstrip("/speed "))
+        return False
+    if text.startswith("/sub"):
+        player['sub-visibility']=True
+        if len(text)>4:
+            player['slang']=text[4:]
+        return False
+    if text=="/dub":
+        player['sub-visibility']=False
+        return False
+    if text=="/private":
+        if user_update_lock is None:
+            user_update_lock=chat_id
+            print(chat_id)
+            text="Private mode engaged..."
+            length=len(text.encode('utf-16-le'))//2
+            telegram_bot_send_message(text,chat_id, [{"type": "italic", "offset": 0, "length": length}])
+            return False
+    if text=="/public":
+        if user_update_lock is not None:
+            user_update_lock=None
+            text="Public mode engaged..."
+            length=len(text.encode('utf-16-le'))//2
+            telegram_bot_send_message(text,chat_id, [{"type": "italic", "offset": 0, "length": length}])
+            return False
+    if text=="/screenshot":
+        os.makedirs(config["Folders"]["Screenshots"], exist_ok=True)
+        filename=list(map(lambda x: get_info(x['filename']),itertools.dropwhile(lambda x: 'current' not in x or not x['current'], player.playlist)))[0]
+        name=filename['title']
+        filename=os.path.join("cache","screenshot","%s-%.2f.png"%(name,player.time_pos))
+        player.screenshot_to_file(filename)
+        while not os.path.exists(filename):
+            time.sleep(0.1)
+        telegram_bot_send_document(chat_id,filename)
+        return False
+    if text=="/shuffle":
+        shuffle = True
+        create_player()
+        player.pause = False
+        perform_shuffle()
+        return False
+    if text=="/noshuffle":
+        shuffle = False
+        return False
+    if text=="/next":
+        create_player()
+        if shuffle:
+            perform_shuffle()
+        player.playlist_next("force")
+        return False
+    if text=="/pause":
+        create_player()
+        player.pause = True
+        return False
+    if text=="/play":
+        create_player()
+        player.pause = False
+        return False
+    if text.startswith("/say "):
+        basetext=""
+        text=basetext+text[4:]
+        telegram_bot_send_message_all(text, pinned=False)
+        return False
+    if text=="/porny":
+        porny = True
+        text="Porny mode engaged..."
+        length=len(text.encode('utf-16-le'))//2
+        telegram_bot_send_message(text,chat_id, [{"type": "italic", "offset": 0, "length": length}])
+        if not shuffle:
+            shuffle=True
+            create_player()
+            perform_shuffle()
+        return False
+    if text[0]=="/" and text[1:].capitalize() in commands:
+        if text[1:].capitalize() in pornfolder:
+            pornfolder.remove(text[1:].capitalize())
+            text="%s mode disengaged..."%text[1:].capitalize()
+            length=len(text.encode('utf-16-le'))//2
+            if len(pornfolder)!=0:
+                text+="\n\nCurrently engaged modes: %s"%", ".join(list(map(lambda x: x.lower(),pornfolder))).capitalize()
+            telegram_bot_send_message(text,chat_id, [{"type": "italic", "offset": 0, "length": length}])
+            return False
+        porny = True
+        pornfolder.append(text[1:].capitalize())
+        if len(pornfolder)>1:
+            text="%s modes engaged..."%", ".join(list(map(lambda x: x.lower(),pornfolder))).capitalize()
+        else:
+            text="%s mode engaged..."%text[1:].capitalize()
+
+        length=len(text.encode('utf-16-le'))//2
+        telegram_bot_send_message(text,chat_id, [{"type": "italic", "offset": 0, "length": length}])
+        if not shuffle:
+            shuffle=True
+            create_player()
+            perform_shuffle()
+        return False
+    if text=="/normie":
+        porny = False
+        text="Porny mode disengaged..."
+        length=len(text.encode('utf-16-le'))//2
+        telegram_bot_send_message(text,chat_id, [{"type": "italic", "offset": 0, "length": length}])
+        return False
+    if text=="/hook":
+        hook_sticker_state[chat_id]=player.path
+        telegram_bot_send_message("Please send the sticker to bind to the currently playing file...", chat_id)
+        return False
+    if text.startswith("/download") and player is not None and not player.pause:
+        filename=" ".join(text.split(" ")[1:])
+        watching=False
+        if filename=="":
+            filename=list(map(lambda x: x['filename'],itertools.dropwhile(lambda x: 'current' not in x or not x['current'], player.playlist)))[0]
+            watching=True
+        if not (filename.startswith("/") or filename.startswith("cache")):
+            text="Downloading..."
+            length=len(text.encode('utf-16-le'))//2
+            telegram_bot_send_message(text, chat_id, {"type": "italic", "offset": 0, "length": length})
+            telegram_bot_execute("sendChatAction",{"chat_id":chat_id,"action":"typing"})
+            with yt_dlp.YoutubeDL({"outtmpl": os.path.join(config["Folders"]["Uploads"],'%(title)s.%(ext)s')}) as ydl:
+                info=ydl.extract_info(filename, download=True)
+                filename = ydl.prepare_filename(info)
+        if watching:
+            open('cache/started/%s.started'%filename.split('/')[-1], 'a').close()
+        file_stats=os.stat(filename)
+        if file_stats.st_size<1024*1024*50:
+            telegram_bot_send_document(chat_id, filename)
+            return False
+        else:
+            file_url=home_url+"download/"+filename.split("/")[-1]
+            file_url=file_url.replace(" ","%20")
+            text="File available at "
+            offset=len(text.encode('utf-16-le'))//2
+            text+=file_url
+            length=len(text.encode('utf-16-le'))//2-offset
+            telegram_bot_send_message(text,chat_id, {"type": "url", "offset": offset, "length": length})
+            return False
+    if text.startswith("/seek"):
+        seekpos= max(0, min(100,int(text.split(" ")[-1])))
+        player.seek(seekpos,"absolute-percent")
+        return False
+    if text=="/start" or text=="/status":
+        has_updates=True
+        return False
+    if text=="/oofvideo":
+        mpv_handle_play_file(
+            "https://www.youtube.com/watch?v=0twDETh6QaI",
+            True)
+        return True
+    if text=="/shutdown" and str(chat_id)==config["Telegram"]["Chats"].split(",")[0]:
+        shutdown = True
+        quit()
+        return False #should never happen lmao
+
+def telegram_bot_process_updates():
     global hook_sticker_state
     has_updates=False
     important_command=False
     for update in telegram_bot_get_updates():
         for ele in update:
             if ele=="text":
-                text = update['text']
-                if not blank:
-                    print("[telegram bot] "+text)
-                if text.startswith("/vol"):
-                    player.volume = max(0, min(300,int(text.split(" ")[-1])))
-                    continue
-                if text.startswith("/speed"):
-                    important_command=True
-                    player.speed = float(text.lstrip("/speed "))
-                    continue
-                if text.startswith("/sub"):
-                    important_command=True
-                    player['sub-visibility']=True
-                    if len(text)>4:
-                        player['slang']=text[4:]
-                    continue
-                if text=="/dub":
-                    important_command=True
-                    player['sub-visibility']=False
-                    continue
-                if text=="/private":
-                    if user_update_lock is None:
-                        user_update_lock=update["chat"]["id"]
-                        print(update["chat"]["id"])
-                        text="Private mode engaged..."
-                        length=len(text.encode('utf-16-le'))//2
-                        telegram_bot_send_message(text,update["chat"]["id"], [{"type": "italic", "offset": 0, "length": length}])
-                        continue
-                if text=="/public":
-                    if user_update_lock is not None:
-                        user_update_lock=None
-                        text="Public mode engaged..."
-                        length=len(text.encode('utf-16-le'))//2
-                        telegram_bot_send_message(text,update["chat"]["id"], [{"type": "italic", "offset": 0, "length": length}])
-                        continue
-                if text=="/screenshot":
-                    os.makedirs(config["Folders"]["Screenshots"], exist_ok=True)
-                    filename=list(map(lambda x: get_info(x['filename']),itertools.dropwhile(lambda x: 'current' not in x or not x['current'], player.playlist)))[0]
-                    name=filename['title']
-                    filename=os.path.join("cache","screenshot","%s-%.2f.png"%(name,player.time_pos))
-                    player.screenshot_to_file(filename)
-                    telegram_bot_send_document(update["chat"]["id"],filename)
-                    continue
-                if text=="/shuffle":
-                    shuffle = True
-                    has_updates=True
-                    perform_shuffle()
-                    continue
-                if text=="/noshuffle":
-                    shuffle = False
-                    has_updates=True
-                    continue
-                if text=="/next":
-                    create_player()
-                    player.playlist_next("force")
-                    continue
-                if text=="/pause":
-                    create_player()
-                    player.pause = True
-                    continue
-                if text=="/play":
-                    create_player()
-                    player.pause = False
-                    if shuffle:
-                        perform_shuffle()
-                    continue
-                if text.startswith("/say "):
-                    basetext="@%s:"%update["chat"]["username"]
-                    text=basetext+text[4:]
-                    if "entities" in update:
-                        entities=[]
-                        for entity in update["entities"]:
-                            if entity["type"]=="bot_command" and entity["offset"]==0:
-                                continue
-                            if "offset" in entity:
-                                entity["offset"]=max(0,entity["offset"]-5+len(basetext))
-                            entities.append(entity)
-                        telegram_bot_send_message_all(text, entities, pinned=False)
-                    else:
-                        telegram_bot_send_message_all(text, pinned=False)
-                    continue
-                if text=="/porny":
-                    porny = True
-                    text="Porny mode engaged..."
-                    length=len(text.encode('utf-16-le'))//2
-                    telegram_bot_send_message(text,update["chat"]["id"], [{"type": "italic", "offset": 0, "length": length}])
-                    if not shuffle:
-                        shuffle=True
-                        create_player()
-                        perform_shuffle()
-                    continue
-                if text[0]=="/" and text[1:].capitalize() in commands:
-                    if text[1:].capitalize() in pornfolder:
-                        pornfolder.remove(text[1:].capitalize())
-                        text="%s mode disengaged..."%text[1:].capitalize()
-                        length=len(text.encode('utf-16-le'))//2
-                        if len(pornfolder)!=0:
-                            text+="\n\nCurrently engaged modes: %s"%", ".join(list(map(lambda x: x.lower(),pornfolder))).capitalize()
-                        telegram_bot_send_message(text,update["chat"]["id"], [{"type": "italic", "offset": 0, "length": length}])
-                        continue
-                    porny = True
-                    pornfolder.append(text[1:].capitalize())
-                    if len(pornfolder)>1:
-                        text="%s modes engaged..."%", ".join(list(map(lambda x: x.lower(),pornfolder))).capitalize()
-                    else:
-                        text="%s mode engaged..."%text[1:].capitalize()
-
-                    length=len(text.encode('utf-16-le'))//2
-                    telegram_bot_send_message(text,update["chat"]["id"], [{"type": "italic", "offset": 0, "length": length}])
-                    if not shuffle:
-                        shuffle=True
-                        create_player()
-                        perform_shuffle()
-                    continue
-                if text=="/normie":
-                    porny = False
-                    text="Porny mode disengaged..."
-                    length=len(text.encode('utf-16-le'))//2
-                    telegram_bot_send_message(text,update["chat"]["id"], [{"type": "italic", "offset": 0, "length": length}])
-                    continue
-                if text=="/hook":
-                    hook_sticker_state[update["chat"]["id"]]=player.path
-                    telegram_bot_send_message("Please send the sticker to bind to the currently playing file...", update["chat"]["id"])
-                    continue
+                text=update[ele]
                 if text=="." and player.pause:
                     player.frame_step()
                     continue
                 if text=="," and player.pause:
                     player.frame_back_step()
                     continue
-                if text=="m" and player.pause:
+                if text.lower()=="m" and player.pause:
                     player.seek(1)
                     continue
-                if text=="z" and player.pause:
+                if text.lower()=="z" and player.pause:
                     player.seek(-1)
                     continue
-                if text.startswith("/download") and player is not None and not player.pause:
-                    filename=" ".join(text.split(" ")[1:])
-                    watching=False
-                    if filename=="":
-                        filename=list(map(lambda x: x['filename'],itertools.dropwhile(lambda x: 'current' not in x or not x['current'], player.playlist)))[0]
-                        watching=True
-                    else:
+            if ele=="entities":
+                for entity in update[ele]:
+                    if entity["type"]=="url" and "text" in update:
+                        text=update["text"][entity["offset"]:entity["offset"]+entity["length"]]
+                        print("[Telegram bot]",text)
                         important_command=True
-                    if not (filename.startswith("/") or filename.startswith("cache")):
-                        text="Downloading..."
-                        length=len(text.encode('utf-16-le'))//2
-                        telegram_bot_send_message(text, update["chat"]["id"], {"type": "italic", "offset": 0, "length": length})
-                        telegram_bot_execute("sendChatAction",{"chat_id":update["chat"]["id"],"action":"typing"})
-                        with yt_dlp.YoutubeDL({"outtmpl": os.path.join(config["Folders"]["Uploads"],'%(title)s.%(ext)s')}) as ydl:
-                            info=ydl.extract_info(filename, download=True)
-                            filename = ydl.prepare_filename(info)
-                    if watching:
-                        open('cache/started/%s.started'%filename.split('/')[-1], 'a').close()
-                    file_stats=os.stat(filename)
-                    if file_stats.st_size<1024*1024*50:
-                        telegram_bot_send_document(update["chat"]["id"], filename)
-                        continue
-                    else:
-                        file_url=home_url+"download/"+filename.split("/")[-1]
-                        file_url=file_url.replace(" ","%20")
-                        text="File available at "
-                        offset=len(text.encode('utf-16-le'))//2
-                        text+=file_url
-                        length=len(text.encode('utf-16-le'))//2-offset
-                        telegram_bot_send_message(text,update["chat"]["id"], {"type": "url", "offset": offset, "length": length})
-                        continue
-                if text.startswith("/seek"):
-                    seekpos= max(0, min(100,int(text.split(" ")[-1])))
-                    player.seek(seekpos,"absolute-percent")
-                    continue
-                if text=="/start" or text=="/status":
-                    has_updates=True
-                    continue
-                if text=="/oofvideo":
-                    important_command=True
-                    mpv_handle_play_file(
-                        "https://www.youtube.com/watch?v=0twDETh6QaI",
-                        True)
-                    has_updates=True
-                    continue
-                if text=="/shutdown":
-                    shutdown = True
-                    quit()
-                    continue
-                    #if len(text)>6:
-                important_command=True
-                for e in extractor.list_extractor_classes():
-                    if e.working() and e.suitable(text) and e.IE_NAME != "generic":
-                        try:
-                            mpv_handle_play_file(text, True)
-                        except Exception as e:
-                            if type(e.exc_info[1]) is yt_dlp.utils.ExtractorError:
-                                telegram_bot_send_message(e.exc_info[1].orig_msg,update["chat"]["id"])
-                            else:
-                                telegram_bot_send_message("Sorry, this URL is currently broken...",update["chat"]["id"])
-                            break
-                        has_updates=True
-                        break
-                else:
-                    try:
-                        get_info(text, text.replace("/","-"))
-                        mpv_handle_play_file(text, True)
-                        has_updates=True
-                        break
-                    except Exception:
-                        if text.startswith("http") and text.split(".")[-1] in ALLOWED_EXTENSIONS:
-                            telegram_bot_execute("sendChatAction",{"chat_id":update["chat"]["id"],"action":"typing"})
-                            destination=download_from_url(text)
-                            mpv_handle_play_file(destination, True)
+                        result = play_url(text)
+                        if result is not None:
+                            telegram_bot_send_message(result, update["chat"]["id"])
                         else:
-                            telegram_bot_send_message("Sorry, can't handle this URL or command...",update["chat"]["id"])
+                            has_updates=True
+                    if entity["type"]=="text_link":
+                        text=entity["url"]
+                        print("[Telegram bot]",text)
+                        important_command=True
+                        result = play_url(text)
+                        if result is not None:
+                            telegram_bot_send_message(result, update["chat"]["id"])
+                        else:
+                            has_updates=True
+                    if entity["type"]=="bot_command" and "text" in update:
+                        text=update["text"][entity["offset"]:]
+                        text="/"+text.split("/")[1]
+                        result=bot_command(text, update["chat"]["id"])
+                        if result is not None:
+                            has_updates=True
+                            important_command=result
+                        else:
+                            telegram_bot_send_message("Cannot handle command: "+text, update["chat"]["id"])
+                if has_updates:
+                    break
             elif isinstance(update[ele],dict) and "file_id" in update[ele]:
                 important_command=True
                 telegram_bot_execute("sendChatAction",{"chat_id":update["chat"]["id"],"action":"typing"})
@@ -726,8 +727,6 @@ def telegram_bot_process_updates():
             telegram_bot_execute("deleteMessage",{"message_id":update["message_id"],"chat_id":update["chat"]["id"]})
     if has_updates:
         telegram_send_started(True)
-
-
 
 def telegram_bot_send_message(text, chat, entries=None, silent=False):
     if entries is None:
@@ -1313,15 +1312,31 @@ def mpv_handle_play(video):
         player.playlist_append(videopath)
     telegram_send_started()
 
+def camel_to_snake(name):
+    name = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+    return re.sub('([a-z0-9])([A-Z])', r'\1_\2', name).lower()
+
 def create_player():
     global player
     if blank and "Blanking" in config:
         os.system(config["Blanking"]["Blank"])
     if player is None:
-        player=mpv.MPV(ytdl=True, image_display_duration=8, ytdl_format=config["Player"]["YtDlpFormat"], input_vo_keyboard=True, osc=True, alpha="blend", volume_max=300, profile=config["Player"]["Profile"], slang=config["Player"]["sLang"], sub_auto="fuzzy", ytdl_raw_options=config["Player"]["YtDlpRawOptions"], sub_visibility=False, hwdec=config["Player"]["HwDec"], drm_connector=config["Player"]["DrmConnector"])
-
-
-        #    player.add_periodic_timer(1, telegram_bot_process_updates)
+        player_config_base = config["Player"]
+        player_config={}
+        player_flags=[]
+        for ele in player_config_base:
+            ment=player_config_base[ele]
+            if ment == "":
+                player_flags.append(camel_to_snake(ele))
+                continue
+            player_config[camel_to_snake(ele)]=ment
+        player_config_ytdl_raw = config["Ytdl"]
+        player_config_ytdl=""
+        for ele in player_config_ytdl_raw:
+            propname=camel_to_snake(ele).replace("_","-")
+            player_config_ytdl+=propname+"="+player_config_ytdl_raw[ele]+","
+        player_config["ytdl_raw_options"]=player_config_ytdl[:-1]
+        player=mpv.MPV(*player_flags, **player_config)
 
         @player.event_callback('start-file')
         def start(event):
@@ -1342,7 +1357,6 @@ def create_player():
         @player.property_observer('time-pos')
         def observe_time(_name, value):
             time_observer(value)
-            #telegram_bot_process_updates()
 
 def mpv_handle_play_file(path, by_telegram=False):
     get_info(path) #prevents bad paths from entering the queue
