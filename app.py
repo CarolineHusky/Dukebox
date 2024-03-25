@@ -570,16 +570,21 @@ def bot_command(text, chat_id):
         if filename=="":
             filename=player.path
             watching=True
+        og_filename=filename
         if not (filename.startswith("/") or filename.startswith("cache")):
             text="Downloading..."
             length=len(text.encode('utf-16-le'))//2
             telegram_bot_send_message(text, chat_id, {"type": "italic", "offset": 0, "length": length})
             telegram_bot_execute("sendChatAction",{"chat_id":chat_id,"action":"typing"})
-            with yt_dlp.YoutubeDL({"outtmpl": os.path.join(config["Folders"]["Uploads"],'%(title)s.mp4')}) as ydl:
+            with yt_dlp.YoutubeDL({"outtmpl": os.path.join(config["Folders"]["Uploads"],'%(title)s.%(ext)s'), "format": "bestvideo[ext!=webm]+bestaudio[ext!=webm]/best[ext!=webm]", "recode-video": "mp4", "remux-video": "mp4", "merge-output-format": "mp4"}) as ydl:
                 info=ydl.extract_info(filename, download=True)
                 filename = ydl.prepare_filename(info)
         if watching:
             open('cache/started/%s.started'%filename.split('/')[-1], 'a').close()
+        try:
+            get_thumbnail_for_downloader(get_info(og_filename), filename)
+        except Exception:
+            print(traceback.format_exc())
         file_stats=os.stat(filename)
         if file_stats.st_size<1024*1024*50:
             telegram_bot_send_document(chat_id, filename)
@@ -931,6 +936,22 @@ def generate_b64thumb(filename):
     with open(os.path.expanduser(os.path.join(config["Folders"]["Thumbnails"],filename)), "rb") as image_file:
         encoded_string = base64.b64encode(image_file.read())
     return "data:image/png;base64, "+encoded_string.decode('ascii')
+
+def get_thumbnail_for_downloader(info, destination, wsize=256, hsize=256):
+    image = None
+    if not 'thumbnails' in info:
+        if 'thumbnail' in info:
+            image=info["thumbnail"]["url"]
+    if image is None:
+        for ele in sorted(filter(lambda x: 'width' in x,info['thumbnails']), key=lambda x: -x['width']):
+            if ele["width"]<=wsize and ele["height"]<=hsize:
+                image=ele["url"]
+                break
+    if image is None:
+        return
+    image = Image.open(urllib.request.urlopen(image))
+    image.thumbnail((wsize,hsize))
+    image.save(os.path.join(os.path.expanduser(config["Folders"]["Thumbnails"]),get_thumbnail_location(destination)))
 
 def generate_thumbnail(info, uploader=None):
     if "telegram_thumbnail" in info and info['telegram_thumbnail'] is not None:
