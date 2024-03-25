@@ -429,7 +429,6 @@ def telegram_bot_process_callback(command,chat_id):
 hook_sticker_state={}
 
 def play_url(text):
-    print(text)
     for e in extractor.list_extractor_classes():
         if e.working() and e.suitable(text) and e.IE_NAME != "generic":
             try:
@@ -489,13 +488,9 @@ def bot_command(text, chat_id):
             telegram_bot_send_message(text,chat_id, [{"type": "italic", "offset": 0, "length": length}])
             return False
     if text=="/screenshot":
-        os.makedirs(config["Folders"]["Screenshots"], exist_ok=True)
-        filename=list(map(lambda x: get_info(x['filename']),itertools.dropwhile(lambda x: 'current' not in x or not x['current'], player.playlist)))[0]
-        name=filename['title']
-        filename=os.path.join("cache","screenshot","%s-%.2f.png"%(name,player.time_pos))
-        player.screenshot_to_file(filename)
-        while not os.path.exists(filename):
-            time.sleep(0.1)
+        screenshot=player.screenshot_raw()
+        filename=os.path.join("cache","screenshot","%s-%.2f.png"%(player.filename,player.time_pos))
+        screenshot.save(filename)
         telegram_bot_send_document(chat_id,filename)
         return False
     if text=="/shuffle":
@@ -573,14 +568,14 @@ def bot_command(text, chat_id):
         filename=" ".join(text.split(" ")[1:])
         watching=False
         if filename=="":
-            filename=list(map(lambda x: x['filename'],itertools.dropwhile(lambda x: 'current' not in x or not x['current'], player.playlist)))[0]
+            filename=player.path
             watching=True
         if not (filename.startswith("/") or filename.startswith("cache")):
             text="Downloading..."
             length=len(text.encode('utf-16-le'))//2
             telegram_bot_send_message(text, chat_id, {"type": "italic", "offset": 0, "length": length})
             telegram_bot_execute("sendChatAction",{"chat_id":chat_id,"action":"typing"})
-            with yt_dlp.YoutubeDL({"outtmpl": os.path.join(config["Folders"]["Uploads"],'%(title)s.%(ext)s')}) as ydl:
+            with yt_dlp.YoutubeDL({"outtmpl": os.path.join(config["Folders"]["Uploads"],'%(title)s.mp4')}) as ydl:
                 info=ydl.extract_info(filename, download=True)
                 filename = ydl.prepare_filename(info)
         if watching:
@@ -602,8 +597,9 @@ def bot_command(text, chat_id):
         seekpos= max(0, min(100,int(text.split(" ")[-1])))
         player.seek(seekpos,"absolute-percent")
         return False
-    if text=="/start" or text=="/status":
-        has_updates=True
+    if text=="/start":
+        return True
+    if text=="/status":
         return False
     if text=="/oofvideo":
         mpv_handle_play_file(
@@ -676,14 +672,14 @@ def telegram_bot_process_updates():
                         if update["chat"]["id"] in hook_sticker_state:
                             if not "StickerHooks" in config:
                                 config["StickerHooks"]={}
-                            config["StickerHooks"][update[ele]["file_unique_id"]]=hook_sticker_state[update["chat"]["id"]]
+                            config["StickerHooks"][update[ele]["set_name"]+update[ele]["emoji"]]=hook_sticker_state[update["chat"]["id"]]
                             del hook_sticker_state[update["chat"]["id"]]
                             with open("config.ini", "w") as f:
                                 config.write(f)
                             telegram_bot_send_message("Fantastic, binding set!", update["chat"]["id"])
                             download_file=None
-                        elif update[ele]["file_unique_id"] in config["StickerHooks"]:
-                            download_file=config["StickerHooks"][update[ele]["file_unique_id"]]
+                        elif update[ele]["set_name"]+update[ele]["emoji"] in config["StickerHooks"]:
+                            download_file=config["StickerHooks"][update[ele]["set_name"]+update[ele]["emoji"]]
                             important_command=False
                         else:
                             download_file=telegram_bot_download_file(update[ele]["file_id"],update[ele]["set_name"]+" "+update[ele]["emoji"], update["chat"]["id"], update["message_id"])
@@ -781,45 +777,73 @@ def telegram_bot_send_message_all(text, entries=None, silent=True, pinned=True):
                 telegram_bot_execute("pinChatMessage",{"chat_id":chat, "message_id":result["message_id"], "disable_notification":True})
                 last_global_messages.append((result["message_id"],chat))
 
+def render_telegram_info(filename, title, text, entities):
+    try:
+        entry=get_info(filename)
+    except Exception:
+        print(traceback.format_exc())
+        entry={"id": filename, "title": title}
+    if 'uploader' in entry or 'tumblr_url' in entry:
+        offset=len(text.encode('utf-16-le'))//2
+        if 'tumblr_url' not in entry:
+            text+=entry['uploader']
+            length=len(text.encode('utf-16-le'))//2-offset
+            if 'uploader_id' in entry:
+                url = home_url + "user/%s"%entry['uploader_id'][1:]
+                entities.append({"type": "text_link", "offset": offset, "length": length, "url": url})
+            elif 'channel_id' in entry:
+                url = home_url + "channel/%s"%entry['channel_id']
+                entities.append({"type": "text_link", "offset": offset, "length": length, "url": url})
+            text+=": "
+    text+="%s"%entry['title'].replace("@","\uFF20")
+    if 'tumblr_url' in entry:
+        length=len(text.encode('utf-16-le'))//2-offset
+        entities.append({"type": "text_link", "offset": offset, "length": length, "url": entry['tumblr_url']})
+    text+="\n"
+    return text
+
 current_telegram_message = None
 alerted_low_battery = False
 def telegram_send_started(silent=True):
+    if shutdown:
+        return
     global alerted_low_battery
-    playlist=list(map(lambda x: get_info(x['filename']),itertools.dropwhile(lambda x: 'current' not in x or not x['current'], player.playlist)))
     text=""
+    entities=[]
+    if player is not None and not player.idle_active and player.sub_text:
+        text+=player.sub_text
+        length=len(text.encode('utf-16-le'))//2
+        entities.append({"type": "blockquote", "offset": 0, "length": length})
+        #text+="\n\n"
     battery = psutil.sensors_battery()
     if battery.power_plugged==True and battery.percent<99:
         text+="\u26A1 %02d%% "%battery.percent
         alerted_low_battery = False
     elif battery.percent<36:
         text+="\U0001FAAB %02d%% "%battery.percent
-    entities=[]
-    for index,entry in enumerate(playlist):
-        if index<2:
-            offset=len(text.encode('utf-16-le'))//2
-            if index==0:
-                text+="Currently playing:\n"
-            elif index==1:
+    if player is not None and not player.idle_active and player.filename:
+        offset=len(text.encode('utf-16-le'))//2
+        if player.seeking:
+            text+="Loading:\n"
+        else:
+            text+="Currently playing:\n"
+        length=len(text.encode('utf-16-le'))//2-offset
+        entities.append({"type": "bold", "offset": offset, "length": length})
+        text=render_telegram_info(player.path, player.media_title, text, entities)
+
+    has_up_next=False
+    if not player.idle_active:
+        for playlist_entry in player.playlist[player.playlist_playing_pos+1:]:
+            if not has_up_next:
+                offset=len(text.encode('utf-16-le'))//2
                 text+="\nUp next:\n"
-            length=len(text.encode('utf-16-le'))//2-offset
-            entities.append({"type": "bold", "offset": offset, "length": length})
-        if 'uploader' in entry or 'tumblr_url' in entry:
-            offset=len(text.encode('utf-16-le'))//2
-            if 'tumblr_url' not in entry:
-                text+=entry['uploader']
+                has_up_next=True
                 length=len(text.encode('utf-16-le'))//2-offset
-                if 'uploader_id' in entry:
-                    url = home_url + "user/%s"%entry['uploader_id'][1:]
-                    entities.append({"type": "text_link", "offset": offset, "length": length, "url": url})
-                elif 'channel_id' in entry:
-                    url = home_url + "channel/%s"%entry['channel_id']
-                    entities.append({"type": "text_link", "offset": offset, "length": length, "url": url})
-                text+=": "
-        text+="%s"%entry['title'].replace("@","\uFF20")
-        if 'tumblr_url' in entry:
-            length=len(text.encode('utf-16-le'))//2-offset
-            entities.append({"type": "text_link", "offset": offset, "length": length, "url": entry['tumblr_url']})
-        text+="\n"
+                entities.append({"type": "bold", "offset": offset, "length": length})
+            if "title" in playlist_entry:
+                text=render_telegram_info(playlist_entry["filename"], playlist_entry["title"], text, entities)
+            else:
+                text=render_telegram_info(playlist_entry["filename"], playlist_entry["filename"], text, entities)
     if text=="" and not player.idle_active:
         return
     if shuffle:
@@ -882,10 +906,10 @@ def sponsorblock(video_id):
 #TODO: This is really bad
 def is_in_playlist(video):
     global player
-    if player == None:
+    if player == None or player.idle_active:
         return None
     videopath="https://youtu.be/"+video
-    playlist=list(map(lambda x: x['filename'],itertools.dropwhile(lambda x: 'current' not in x or not x['current'], player.playlist)))
+    playlist=list(map(lambda x: x['filename'],player.playlist[player.playlist_playing_pos:]))
     if videopath in playlist:
         return playlist.index(videopath)
     if video in playlist:
@@ -1088,7 +1112,7 @@ def get_thumbnail(filename):
 def get_info(videourl):
     if videourl is None:
         raise Exception("Broken link")
-    if not videourl.startswith("http"):
+    if not videourl.strip().startswith("http"):
         thumbnail=get_thumbnail(videourl)
         name = videourl.split("/")[-1]
         name_regular = name.replace("%20"," ").replace("_"," ")
@@ -1120,28 +1144,26 @@ def get_info(videourl):
     return info
 
 def get_safe_playlist():
-    current=False
-
-    for ele in player.playlist:
-        if 'current' in ele and ele['current']:
-            current = True
-        if current:
-            try:
-                yield get_info(ele['filename'])
-            except Exception as e:
-                print(traceback.format_exc())
-    if not current:
+    if player is None or player.idle_active:
         return []
+    for ele in player.playlist[player.playlist_playing_pos:]:
+        try:
+            yield get_info(ele['filename'])
+        except Exception as e:
+            print(traceback.format_exc())
+            yield {"id": ele["filename"], "title": ele["title"]}
 
 def generate_page(page, title):
     html="<html><head><title>%s</title><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"%title#<link rel=\"stylesheet\" href=\"/style.css\">"%title
     html+="<style>"+style()+"</style>"
-    if player is not None and not player.pause and player.time_remaining is not None:
+    if player is not None and not player.pause and player.time_remaining is not None and blank:
         html+="<meta http-equiv=\"refresh\" content=\"%d\">"%(player.time_remaining+random.randint(5,10))
     html+="</head><body>"
     html+="<header><input id='search'/><button id='searchbutton'>Search YT</button>"
     html+="</header>"
-    if player is not None:
+    yield html
+    html=""
+    if player is not None and not player.idle_active:
         playlist=list(get_safe_playlist())
         if len(playlist)>0:
             html+="<footer><div>"
@@ -1150,10 +1172,12 @@ def generate_page(page, title):
                 html+=" (%d)"%len(playlist)
             html+=": <strong>"+playlist[0]['title']+"</strong></summary>"
             html+=generate_description(playlist[0], clickable=True, mainpage=False)
+            yield html
+            html=""
             if len(playlist)>1:
-                html+="Up next: <div>"
+                yield "Up next: <div>"
                 for ele in playlist[1:]:
-                    html+=generate_description(ele, clickable=True, mainpage=False)
+                    yield generate_description(ele, clickable=True, mainpage=False)
                 html+="</div>"
             html+="</details>"
             html+="</div><div>"
@@ -1301,12 +1325,12 @@ def mpv_handle_play(video):
 
     videopath="https://youtu.be/"+video
     get_info(videopath) #prevents bad paths from entering the queue
-    playlist=list(map(lambda x: x['filename'],player.playlist))
+    playlist=list(map(lambda x: x['filename'],player.playlist[player.playlist_playing_pos:]))
     if len(player.playlist) == 0:
         player.play(videopath)
     elif is_in_playlist(video) is not None:
         player.playlist_remove(playlist.index(videopath))
-    elif not any(filter(lambda x:'current' in x and x['current'], player.playlist)):
+    elif player.idle_active:
         player.play(videopath)
     else:
         player.playlist_append(videopath)
@@ -1350,6 +1374,14 @@ def create_player():
         def observe_pause(_name, value):
             telegram_send_started(True)
 
+        @player.property_observer('sub-text')
+        def observe_pause(_name, value):
+            telegram_send_started(True)
+
+        @player.property_observer('seeking')
+        def observe_pause(_name, value):
+            telegram_send_started(True)
+
         @player.property_observer('idle-active')
         def observe_idle(_name, value):
             telegram_send_started(True)
@@ -1362,12 +1394,12 @@ def mpv_handle_play_file(path, by_telegram=False):
     get_info(path) #prevents bad paths from entering the queue
     create_player()
 
-    playlist=list(map(lambda x: x['filename'],player.playlist))
+    playlist=list(map(lambda x: x['filename'],player.playlist[player.playlist_playing_pos:]))
     if len(player.playlist) == 0:
         player.play(path)
     elif is_in_playlist(path) is not None:
         player.playlist_remove(playlist.index(path))
-    elif not any(filter(lambda x:'current' in x and x['current'], player.playlist)):
+    elif player.idle_active:
         player.play(path)
     else:
         player.playlist_append(path)
@@ -1528,7 +1560,7 @@ def perform_shuffle(inner=False):
     if not shuffle:
         return
     create_player()
-    if len(player.playlist)>1 and len(list(itertools.dropwhile(lambda x: 'current' not in x or not x['current'], player.playlist)))>1:
+    if len(player.playlist)>player.playlist_playing_pos+1:
         return
     #if not any(filter(lambda x:'current' in x and x['current'], player.playlist)):
     played_files=set(os.listdir('cache/started'))
