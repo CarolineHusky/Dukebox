@@ -1,4 +1,4 @@
-from flask import Flask,redirect, request, send_from_directory
+from flask import Flask,redirect, request, send_from_directory, url_for
 import json
 import yt_dlp
 from yt_dlp import extractor
@@ -68,7 +68,7 @@ body{
 table {
     width: 100%;
 }
-header {
+header > form {
     display: flex;
     position: sticky;
     top: 0px;
@@ -123,7 +123,7 @@ button {
     border-bottom-right-radius: 4px;
     text-shadow: rgba(0,0,0,.5) 2px 3px 2px, black 0px 0px 2px;
 }
-header > * {
+header > form > * {
     font-size: 1.1em;
 }
 input#search {
@@ -197,7 +197,7 @@ footer {
 footer > * {
     margin: 8px;
 }
-header > *{
+header > form > * {
     flex-grow: 1;
 }
 header > #searchbutton{
@@ -303,6 +303,8 @@ commands=config["Commands"]
 known_forwards={}
 
 def telegram_bot_send_document(chat, filename):
+    if chat is None:
+        return
     if filename in known_forwards:
         from_chat, message = known_forwards[filename]
         return telegram_bot_execute("forwardMessage", {"chat_id": chat, "from_chat_id": from_chat, "message_id": message})
@@ -528,9 +530,24 @@ def bot_command(text, chat_id):
         return False
     if text.startswith("/output "):
         player.audio_device = text.strip("/output ")
+        config["Player"]["AudioDevice"]=player.audio_device
+        with open("config.ini", "w") as f:
+            config.write(f)
         if str(chat_id) in output_device_select_message:
             telegram_bot_execute("deleteMessage",{"message_id":output_device_select_message[str(chat_id)],"chat_id":chat_id})
             del output_device_select_message[str(chat_id)]
+    if text=="/aspect":
+        player["video-aspect-override"]=-1
+        config["Player"]["VideoAspectOverride"]=-1
+        with open("config.ini", "w") as f:
+            config.write(f)
+        return False
+    if text.startswith("/aspect "):
+        player["video-aspect-override"]=text.strip("/aspect ")
+        config["Player"]["VideoAspectOverride"]=text.strip("/aspect ")
+        with open("config.ini", "w") as f:
+            config.write(f)
+        return False
     if text=="/play":
         create_player()
         player.pause = False
@@ -754,6 +771,8 @@ def telegram_bot_process_updates():
         telegram_send_started(True)
 
 def telegram_bot_send_message(text, chat, entries=None, silent=False):
+    if chat is None:
+        return
     if entries is None:
         return telegram_bot_execute("sendMessage", {"chat_id": chat, "text": text, "disable_notification": silent})
     else:
@@ -762,6 +781,8 @@ def telegram_bot_send_message(text, chat, entries=None, silent=False):
 last_global_messages=None
 
 def telegram_bot_send_message_all(text, entries=None, silent=True, pinned=True):
+    if not "Telegram" in config:
+        return
     global last_global_messages
     global shuffle
     global current_telegram_message
@@ -1212,7 +1233,7 @@ def generate_page(page, title):
     if player is not None and not player.pause and player.time_remaining is not None and blank:
         html+="<meta http-equiv=\"refresh\" content=\"%d\">"%(player.time_remaining+random.randint(5,10))
     html+="</head><body>"
-    html+="<header><input id='search'/><button id='searchbutton'>Search YT</button>"
+    html+="<header><form action='/search/' method='GET'><input id='search' name='search'/><button id='searchbutton' type='submit'>Search YT</button></form>"
     html+="</header>"
     yield html
     html=""
@@ -1270,11 +1291,11 @@ details.forEach((detail) => {
 });
 var search = document.getElementById('search');
 var searchbutton = document.getElementById('searchbutton');
-searchbutton.addEventListener("click", function(event) {
-    if(search.value){
-        window.location.href = '/search/'+ search.value;
-    }
-});
+//searchbutton.addEventListener("click", function(event) {
+//    if(search.value){
+//        window.location.href = '/search/'+ search.value;
+//    }
+//});
 </script>
 """.replace('\n','')
     html+="</body></html>"
@@ -1364,7 +1385,7 @@ def time_observer(value):
             for url in infolist:
                 get_ytdlp_info(url,infolist[url])
         battery = psutil.sensors_battery()
-        if player is not None and player.playtime_remaining is not None and battery.power_plugged!=True and battery.secsleft<player.playtime_remaining and battery.secsleft>0 and not alerted_low_battery:
+        if player is not None and player.playtime_remaining is not None and battery.power_plugged!=True and battery.secsleft is not None and battery.secsleft<player.playtime_remaining and battery.secsleft>0 and not alerted_low_battery:
             telegram_bot_send_message_all("\u26A0\U0001FAAB Battery empty in %02d:%02d! \U0001FAAB\u26A0"%divmod(battery.secsleft, 60), pinned=False)
             alerted_low_battery = True
 
@@ -1427,9 +1448,9 @@ def create_player():
         def observe_pause(_name, value):
             telegram_send_started(True)
 
-        @player.property_observer('sub-text')
-        def observe_pause(_name, value):
-            telegram_send_started(True)
+#        @player.property_observer('sub-text')
+#        def observe_pause(_name, value):
+#            telegram_send_started(True)
 
         @player.property_observer('seeking')
         def observe_pause(_name, value):
@@ -1840,12 +1861,30 @@ def search_pause(name):
     mpv_handle_pause()
     return redirect('/search/%s/'%name)
 
+@app.route("/search/")
+def search_base():
+    searchtterm=request.args.get('search')
+    if searchtterm.startswith("/"):
+        bot_command(searchtterm, None)
+        return redirect("/")
+    for e in extractor.list_extractor_classes():
+        if e.working() and e.suitable(searchtterm) and e.IE_NAME != "generic":
+            try:
+                mpv_handle_play_file(searchtterm, True)
+                return redirect('/')
+            except Exception as e:
+                pass
+    return redirect(url_for('search',name = searchtterm))
+
 @app.route("/search/<path:name>/")
 def search(name):
     full_name=name
     if request.query_string:
         full_name+="?"+request.query_string.decode()
     print(full_name)
+    if full_name.startswith(">"):
+        bot_command("/"+full_name[1:], None)
+        return redirect("/")
     for e in extractor.list_extractor_classes():
         if e.working() and e.suitable(full_name) and e.IE_NAME != "generic":
             try:
@@ -1947,9 +1986,10 @@ def quit(*args, **kwargs):
     if blank and "Blanking" in config:
         os.system(config["Blanking"]["Unblank"])
     telegram_bot_send_message_all("Goodbye and 'till next time!", pinned=False)
-    for message, chat in last_global_messages:
-        telegram_bot_execute("unpinAllChatMessages", {"chat_id": chat})
-        telegram_bot_execute("deleteMessage",{"message_id":message,"chat_id":chat})
+    if last_global_messages is not None:
+        for message, chat in last_global_messages:
+            telegram_bot_execute("unpinAllChatMessages", {"chat_id": chat})
+            telegram_bot_execute("deleteMessage",{"message_id":message,"chat_id":chat})
     #if other_thread:
     #    other_thread.terminate()
     if shutdown and "Blanking" in config:
@@ -1977,10 +2017,11 @@ if __name__ == "__main__":
     other_thread = threading.Thread(target=bot_updates)
     other_thread.daemon = True
     other_thread.start()
-    text="Good morning my ladies and gents."
-    telegram_bot_send_message_all("Good morning my ladies and gents.", pinned=False)
-    telegram_bot_send_message_all("To play a file please visit http://%s or send a file or link!"%home_url)
-    text="This bot is for managing the media player at @MiifoxNew's home. Send files to it or have fun!"
-    telegram_bot_execute("setMyDescription", {"language_code":"en", "description":text})
-    telegram_bot_execute("setMyShortDescription", {"language_code":"en", "short_description":text})
+    if "Telegram" in config:
+     text="Good morning my ladies and gents."
+     telegram_bot_send_message_all("Good morning my ladies and gents.", pinned=False)
+     telegram_bot_send_message_all("To play a file please visit http://%s or send a file or link!"%home_url)
+     text="This bot is for managing the media player at @MiifoxNew's home. Send files to it or have fun!"
+     telegram_bot_execute("setMyDescription", {"language_code":"en", "description":text})
+     telegram_bot_execute("setMyShortDescription", {"language_code":"en", "short_description":text})
     app.run(host=ip, port=config["Server"]["Port"])
