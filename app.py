@@ -310,8 +310,11 @@ def telegram_bot_send_document(chat, filename):
     url="https://api.telegram.org/bot"+config["Telegram"]["Token"]
     if filename.lower().endswith(".mp4") or filename.lower().endswith(".webm"):
         url+="/sendVideo"
+        thumbnail_url_alt=os.path.join(os.path.expanduser(config["Folders"]["ThumbnailsAlt"]),get_thumbnail_location(filename))
         thumbnail_url=os.path.join(os.path.expanduser(config["Folders"]["Thumbnails"]),get_thumbnail_location(filename))
-        if os.path.exists(thumbnail_url):
+        if os.path.exists(thumbnail_url_alt):
+            response=requests.post(url, data={'chat_id': chat}, files={'video': open(filename,"rb"), 'thumbnail':open(thumbnail_url_alt,'rb')})
+        elif os.path.exists(thumbnail_url):
             response=requests.post(url, data={'chat_id': chat}, files={'video': open(filename,"rb"), 'thumbnail':open(thumbnail_url,'rb')})
         else:
             response=requests.post(url, data={'chat_id': chat}, files={'video': open(filename,"rb")})
@@ -450,12 +453,15 @@ def play_url(text):
             else:
                 return "Sorry, can't handle this URL or command..."
 
+output_device_select_message={}
+
 def bot_command(text, chat_id):
     global shuffle
     global shutdown
     global porny
     global user_update_lock
     global hook_sticker_state
+    global output_device_select_message
     if not blank:
         print("[telegram bot] "+text)
     if text.startswith("/vol"):
@@ -512,6 +518,19 @@ def bot_command(text, chat_id):
         create_player()
         player.pause = True
         return False
+    if text=="/output":
+        t=[]
+        create_player()
+        text="Select output device..."
+        for ele in player.audio_device_list:
+            t.append([{"text": ele["description"], "callback_data": "/output %s"%ele["name"]}])
+        output_device_select_message[str(chat_id)] = telegram_bot_execute("sendMessage", {"chat_id": chat_id, "text":text, "reply_markup": {"inline_keyboard": t}})["result"]["message_id"]
+        return False
+    if text.startswith("/output "):
+        player.audio_device = text.strip("/output ")
+        if str(chat_id) in output_device_select_message:
+            telegram_bot_execute("deleteMessage",{"message_id":output_device_select_message[str(chat_id)],"chat_id":chat_id})
+            del output_device_select_message[str(chat_id)]
     if text=="/play":
         create_player()
         player.pause = False
@@ -519,6 +538,8 @@ def bot_command(text, chat_id):
     if text.startswith("/say "):
         basetext=""
         text=basetext+text[4:]
+        if text=="":
+            return
         telegram_bot_send_message_all(text, pinned=False)
         return False
     if text=="/porny":
@@ -689,15 +710,18 @@ def telegram_bot_process_updates():
                         else:
                             download_file=telegram_bot_download_file(update[ele]["file_id"],update[ele]["set_name"]+" "+update[ele]["emoji"], update["chat"]["id"], update["message_id"])
                         if player is not None and download_file is not None:
-                            playlist=get_safe_playlist()
-                            try:
-                                _ = next(playlist)
-                            except StopIteration:
-                                pass
-                            playlist=list(playlist)
-                            player.play(download_file)
-                            for ele in playlist:
-                                player.playlist_append(ele["id"])
+                            if player.path == download_file:
+                                player.seek(0,"absolute")
+                            else:
+                                playlist=get_safe_playlist()
+                                try:
+                                    _ = next(playlist)
+                                except StopIteration:
+                                    pass
+                                playlist=list(playlist)
+                                player.play(download_file)
+                                for ele in playlist:
+                                    player.playlist_append(ele["id"])
                             continue
                     elif "file_unique_id" in update[ele]:
                         download_file=telegram_bot_download_file(update[ele]["file_id"],update[ele]["file_unique_id"], update["chat"]["id"], update["message_id"])
@@ -933,8 +957,12 @@ def html_idify(text):
 
 @functools.cache
 def generate_b64thumb(filename):
-    with open(os.path.expanduser(os.path.join(config["Folders"]["Thumbnails"],filename)), "rb") as image_file:
-        encoded_string = base64.b64encode(image_file.read())
+    if os.path.exists(os.path.join(config["Folders"]["ThumbnailsAlt"],filename)):
+        with open(os.path.expanduser(os.path.join(config["Folders"]["ThumbnailsAlt"],filename)), "rb") as image_file:
+            encoded_string = base64.b64encode(image_file.read())
+    else:
+        with open(os.path.expanduser(os.path.join(config["Folders"]["Thumbnails"],filename)), "rb") as image_file:
+            encoded_string = base64.b64encode(image_file.read())
     return "data:image/png;base64, "+encoded_string.decode('ascii')
 
 def get_thumbnail_for_downloader(info, destination, wsize=256, hsize=256):
@@ -951,7 +979,11 @@ def get_thumbnail_for_downloader(info, destination, wsize=256, hsize=256):
         return
     image = Image.open(urllib.request.urlopen(image))
     image.thumbnail((wsize,hsize))
-    image.save(os.path.join(os.path.expanduser(config["Folders"]["Thumbnails"]),get_thumbnail_location(destination)))
+    os.makedirs(config["Folders"]["ThumbnailsAlt"], exist_ok=True)
+    dest = os.path.join(config["Folders"]["ThumbnailsAlt"], get_thumbnail_location(destination))
+    image.save(dest)
+    import shutil
+    shutil.copy2(dest, os.path.expanduser(config["Folders"]["Thumbnails"]))
 
 def generate_thumbnail(info, uploader=None):
     if "telegram_thumbnail" in info and info['telegram_thumbnail'] is not None:
@@ -1332,7 +1364,7 @@ def time_observer(value):
             for url in infolist:
                 get_ytdlp_info(url,infolist[url])
         battery = psutil.sensors_battery()
-        if player is not None and player.playtime_remaining is not None and battery.power_plugged!=True and battery.secsleft<player.playtime_remaining and not alerted_low_battery:
+        if player is not None and player.playtime_remaining is not None and battery.power_plugged!=True and battery.secsleft<player.playtime_remaining and battery.secsleft>0 and not alerted_low_battery:
             telegram_bot_send_message_all("\u26A0\U0001FAAB Battery empty in %02d:%02d! \U0001FAAB\u26A0"%divmod(battery.secsleft, 60), pinned=False)
             alerted_low_battery = True
 
@@ -1740,6 +1772,15 @@ def user_play_endless(name, video):
     mpv_handle_play(video)
     return redirect('/user/%s/endless/#%s'%(name, html_idify(video)))
 
+@app.route("/user/")
+def users():
+    def generate_users_page():
+        yield "<a href='/'>Home</a><br/><br/><table>"
+        for ele in sorted(os.listdir(os.path.join(config["Folders"]["Cache"],"user"))):
+            name=ele.split(".")[0]
+            yield "<tr><td><a href=\"%s\">%s</a></td></tr>"%(name,name)
+        yield "</table>"
+    return generate_page(generate_users_page(), "Recent youtube channels")
 @app.route("/user/<name>/")
 def user(name):
     if '..' in name or '/' in name:
