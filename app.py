@@ -25,7 +25,7 @@ config=configparser.ConfigParser()
 config.optionxform=str
 config.read('config.ini')
 
-blank=True
+blank=False
 if blank:
     log = logging.getLogger('werkzeug')
     log.setLevel(logging.ERROR)
@@ -457,7 +457,7 @@ def play_url(text):
 
 output_device_select_message={}
 
-def bot_command(text, chat_id):
+def bot_command(text, chat_id, chat_name=None):
     global shuffle
     global shutdown
     global porny
@@ -554,6 +554,8 @@ def bot_command(text, chat_id):
         return False
     if text.startswith("/say "):
         basetext=""
+        if chat_name is not None:
+            basetext="["+chat_name+"]:"
         text=basetext+text[4:]
         if text=="":
             return
@@ -697,7 +699,10 @@ def telegram_bot_process_updates():
                     if entity["type"]=="bot_command" and "text" in update:
                         text=update["text"][entity["offset"]:]
                         text="/"+text.split("/")[1]
-                        result=bot_command(text, update["chat"]["id"])
+                        username=None
+                        if "first_name" in update["chat"]:
+                            username=update["chat"]["first_name"]
+                        result=bot_command(text, update["chat"]["id"],username)
                         if result is not None:
                             has_updates=True
                             important_command=result
@@ -860,10 +865,10 @@ def telegram_send_started(silent=True):
     global alerted_low_battery
     text=""
     entities=[]
-    if player is not None and not player.idle_active and player.sub_text:
-        text+=player.sub_text
-        length=len(text.encode('utf-16-le'))//2
-        entities.append({"type": "blockquote", "offset": 0, "length": length})
+    #if player is not None and not player.idle_active and player.sub_text:
+    #    text+=player.sub_text
+    #    length=len(text.encode('utf-16-le'))//2
+    #    entities.append({"type": "blockquote", "offset": 0, "length": length})
         #text+="\n\n"
     battery = psutil.sensors_battery()
     if battery.power_plugged==True and battery.percent<99:
@@ -882,7 +887,7 @@ def telegram_send_started(silent=True):
         text=render_telegram_info(player.path, player.media_title, text, entities)
 
     has_up_next=False
-    if not player.idle_active:
+    if player is not None and not player.idle_active:
         for playlist_entry in player.playlist[player.playlist_playing_pos+1:]:
             if not has_up_next:
                 offset=len(text.encode('utf-16-le'))//2
@@ -894,11 +899,16 @@ def telegram_send_started(silent=True):
                 text=render_telegram_info(playlist_entry["filename"], playlist_entry["title"], text, entities)
             else:
                 text=render_telegram_info(playlist_entry["filename"], playlist_entry["filename"], text, entities)
-    if text=="" and not player.idle_active:
+    if text=="" and player is not None and not player.idle_active:
         return
     if shuffle:
         offset=len(text.encode('utf-16-le'))//2
-        text+="And then shuffle...\n"
+        shuffletext="shuffle"
+        if porny:
+            shuffletext="random"
+        if len(pornfolder)>0:
+            shuffletext=", ".join(list(map(lambda x: x.lower(),pornfolder)))
+        text+="And then %s...\n"%shuffletext
         length=len(text.encode('utf-16-le'))//2-offset
         entities.append({"type": "italic", "offset": offset, "length": length})
     text+="\n"
@@ -1146,6 +1156,38 @@ def get_order(filename):
         return sys.maxsize-os.path.getmtime(startfile)
     return sys.maxsize
 
+def tryint(s):
+    try:
+        return int(s)
+    except:
+        return s
+
+def alphanum_key(s):
+    """ Turn a string into a list of string and number chunks.
+        "z23a" -> ["z", 23, "a"]
+    """
+    return [ tryint(c) for c in re.split('([0-9]+)', s) ]
+
+def generate_folderpage(folder=None, ext=None):
+    html=""
+    if folder is not None:
+        html+="<h1><small>Folder:</small> %s</h1>"%folder.capitalize()
+    html+="<a href='/'>Home</a> - <a href='/music/'>Music</a> - <a href='/telegram/'>Uploads</a>"
+    for ele in config["Commands"]:
+        if folder is not None:
+            html+=" - <a href='../%s'>%s</a>"%(ele, ele.capitalize())
+        else:
+            html+=" - <a href='%s'>%s</a>"%(ele, ele.capitalize())
+    html+="<section class='videogrid'>"
+    yield html
+    if folder is not None:
+        basepath=os.path.expanduser(config["Commands"][folder])
+        for filename in sorted(os.listdir(basepath), key=alphanum_key):
+            if ext is not None and not filename.split(".")[-1] in ext:
+                continue
+            yield generate_description(get_info(os.path.join(basepath,filename)), clickable=True)
+        yield "</section>"
+
 def generate_telegrampage(ext=None, downloads=False):
     files=os.listdir(config["Folders"]["Uploads"])
     files=list(map(lambda x: os.path.join(config["Folders"]["Uploads"],x), files))
@@ -1153,12 +1195,14 @@ def generate_telegrampage(ext=None, downloads=False):
     html="<h1>Recently uploaded...</h1>"
     html+="<a href=\"/\">Home</a>"
     if downloads:
-        html+=" - <a href=\"/telegram/\">Back...</a><br/><br/>"
+        html+=" - <a href=\"/telegram/\">Back...</a>"
     elif ext is None:
         html+=" - <a href=\"/telegram/videos/\">Videos</a>"
-        html+=" - <a href=\"/download/\">Download</a><br/><br/>"
+        html+=" - <a href=\"/download/\">Download</a>"
     else:
-        html+=" - <a href=\"/telegram/\">All uploads</a><br/><br/>"
+        html+=" - <a href=\"/telegram/\">All uploads</a>"
+    html+=" - <a href='/folder/'>Folders</a>"
+    html+="<br/><br/>"
     if ext is None and not downloads:
         html+="""<form method="post"" enctype="multipart/form-data"><input type="file" name="file"></input><input type="submit" value="Upload file..."></input></form>"""
     html+="<section class='videogrid'>"
@@ -1634,7 +1678,7 @@ def perform_shuffle(inner=False):
     if not shuffle:
         return
     create_player()
-    if len(player.playlist)>player.playlist_playing_pos+1:
+    if len(player.playlist)-player.playlist_playing_pos>1:
         return
     #if not any(filter(lambda x:'current' in x and x['current'], player.playlist)):
     played_files=set(os.listdir('cache/started'))
@@ -1673,11 +1717,35 @@ def perform_shuffle(inner=False):
     if not inner:
         telegram_send_started()
 
+@app.route("/folder/")
+def folder_basepage():
+    return generate_page(generate_folderpage(), "Folders")
+
+
+@app.route("/folder/<foldername>/")
+def folder(foldername):
+    if "/" in foldername:
+        return
+    return generate_page(generate_folderpage(foldername,["mp3","flac","wav","mp4",'mkv',"webm", "jpg","jpeg","png","gif"]), foldername.capitalize())
+
+
+@app.route("/folder/<foldername>/play/<name>")
+def folder_play(foldername,name):
+    mpv_handle_play_file(os.path.expanduser(os.path.join(config['Commands'][foldername],name)))
+    return redirect('/folder/%s/#%s'%(foldername,html_idify(name)))
+
 @app.route("/download/<filename>")
 def download(filename):
     if "/" in filename:
         return
     return send_from_directory(config["Folders"]["Uploads"], filename)
+
+@app.route("/delete/<filename>")
+def delete(filename):
+    if "/" in filename:
+        return
+    os.remove(os.path.join(config["Folders"]["Uploads"], filename))
+    return redirect("/download/")
 
 @app.route("/download/")
 def telegram_download():
@@ -1904,7 +1972,7 @@ def generate_home_page(index, subscriptions):
     windex=int(index)+1
     index=windex*36
     html='<h1>Welcome to Mii\'s Dukebox!</h1>'
-    html+='<a href="/music/">Local music</a> - <a href="/telegram/">Uploads</a>'
+    html+='<a href="/music/">Local music</a> - <a href="/telegram/">Uploads</a> - <a href="/folder/">Folders</a>'
     yield html
     html=""
     if subscriptions is not None:
