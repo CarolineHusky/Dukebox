@@ -499,12 +499,6 @@ def bot_command(text, chat_id, chat_name=None):
             length=len(text.encode('utf-16-le'))//2
             telegram_bot_send_message(text,chat_id, [{"type": "italic", "offset": 0, "length": length}])
             return False
-    if text=="/screenshot":
-        screenshot=player.screenshot_raw()
-        filename=os.path.join("cache","screenshot","%s-%.2f.png"%(player.filename,player.time_pos))
-        screenshot.save(filename)
-        telegram_bot_send_document(chat_id,filename)
-        return False
     if text=="/shuffle":
         shuffle = True
         create_player()
@@ -513,16 +507,6 @@ def bot_command(text, chat_id, chat_name=None):
         return False
     if text=="/noshuffle":
         shuffle = False
-        return False
-    if text=="/next":
-        create_player()
-        if shuffle:
-            perform_shuffle()
-        player.playlist_next("force")
-        return False
-    if text=="/pause":
-        create_player()
-        player.pause = True
         return False
     if text=="/output":
         t=[]
@@ -606,7 +590,6 @@ def bot_command(text, chat_id, chat_name=None):
             text="%s modes engaged..."%", ".join(list(map(lambda x: x.lower(),pornfolder))).capitalize()
         else:
             text="%s mode engaged..."%text[1:].capitalize()
-
         length=len(text.encode('utf-16-le'))//2
         telegram_bot_send_message(text,chat_id, [{"type": "italic", "offset": 0, "length": length}])
         if not shuffle:
@@ -620,11 +603,49 @@ def bot_command(text, chat_id, chat_name=None):
         length=len(text.encode('utf-16-le'))//2
         telegram_bot_send_message(text,chat_id, [{"type": "italic", "offset": 0, "length": length}])
         return False
+    if text=="/start":
+        return True
+    if text=="/status":
+        return False
+    if text=="/oofvideo":
+        mpv_handle_play_file(
+            "https://www.youtube.com/watch?v=0twDETh6QaI",
+            True)
+        return True
+    if text=="/shutdown" and str(chat_id)==config["Telegram"]["Chats"].split(",")[0]:
+        shutdown = True
+        quit()
+        return False #should never happen lmao
+    if player is None or player.idle_active:
+        return
+    if text.startswith("/seek"):
+        seekpos= max(0, min(100,int(text.split(" ")[-1])))
+        player.seek(seekpos,"absolute-percent")
+        return False
+    if text=="/next":
+        create_player()
+        pause=player.pause
+        if shuffle:
+            perform_shuffle()
+        player.playlist_next("force")
+        if not pause:
+            player.wait_for_playback()
+        return False
+    if text=="/pause":
+        create_player()
+        player.pause = True
+        return False
     if text=="/hook":
         hook_sticker_state[chat_id]=player.path
         telegram_bot_send_message("Please send the sticker to bind to the currently playing file...", chat_id)
         return False
-    if text.startswith("/download") and player is not None and not player.pause:
+    if player.vo_configured and text=="/screenshot":
+        screenshot=player.screenshot_raw()
+        filename=os.path.join("cache","screenshot","%s-%.2f.png"%(player.filename,player.time_pos))
+        screenshot.save(filename)
+        telegram_bot_send_document(chat_id,filename)
+        return False
+    if text.startswith("/download") or (text=="/screenshot" and not player.vo_configured):
         filename=" ".join(text.split(" ")[1:])
         watching=False
         if filename=="" or filename==None:
@@ -658,23 +679,6 @@ def bot_command(text, chat_id, chat_name=None):
             length=len(text.encode('utf-16-le'))//2-offset
             telegram_bot_send_message(text,chat_id, {"type": "url", "offset": offset, "length": length})
             return False
-    if text.startswith("/seek"):
-        seekpos= max(0, min(100,int(text.split(" ")[-1])))
-        player.seek(seekpos,"absolute-percent")
-        return False
-    if text=="/start":
-        return True
-    if text=="/status":
-        return False
-    if text=="/oofvideo":
-        mpv_handle_play_file(
-            "https://www.youtube.com/watch?v=0twDETh6QaI",
-            True)
-        return True
-    if text=="/shutdown" and str(chat_id)==config["Telegram"]["Chats"].split(",")[0]:
-        shutdown = True
-        quit()
-        return False #should never happen lmao
 
 def telegram_bot_process_updates():
     global hook_sticker_state
@@ -1721,9 +1725,8 @@ def perform_shuffle(inner=False):
     if not shuffle:
         return
     create_player()
-    if len(player.playlist)-player.playlist_playing_pos>1:
+    if not player.idle_active and len(player.playlist)-player.playlist_playing_pos>1:
         return
-    #if not any(filter(lambda x:'current' in x and x['current'], player.playlist)):
     played_files=set(os.listdir('cache/started'))
     if porny:
         if pornfolder==[]:
