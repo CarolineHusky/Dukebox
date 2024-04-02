@@ -20,7 +20,6 @@ import base64
 import functools
 from PIL import Image
 import configparser
-
 config=configparser.ConfigParser()
 config.optionxform=str
 config.read('config.ini')
@@ -455,6 +454,7 @@ def play_url(text):
             else:
                 return "Sorry, can't handle this URL or command..."
 
+
 output_device_select_message={}
 
 def bot_command(text, chat_id, chat_name=None):
@@ -465,7 +465,10 @@ def bot_command(text, chat_id, chat_name=None):
     global hook_sticker_state
     global output_device_select_message
     if not blank:
-        print("[telegram bot] "+text)
+        if chat_name:
+            print(("[telegram bot/%s] "%chat_name)+text)
+        else:
+            print("[telegram bot] "+text)
     if text.startswith("/vol"):
         player.volume = max(0, min(300,int(text.split(" ")[-1])))
         return False
@@ -531,6 +534,22 @@ def bot_command(text, chat_id, chat_name=None):
     if text.startswith("/output "):
         player.audio_device = text.strip("/output ")
         config["Player"]["AudioDevice"]=player.audio_device
+        with open("config.ini", "w") as f:
+            config.write(f)
+        if str(chat_id) in output_device_select_message:
+            telegram_bot_execute("deleteMessage",{"message_id":output_device_select_message[str(chat_id)],"chat_id":chat_id})
+            del output_device_select_message[str(chat_id)]
+    if text=="/video":
+        t=[]
+        create_player()
+        text="Select video device..."
+        for ele in player["display-names"]:
+            t.append([{"text": ele, "callback_data": "/video %s"%ele}])
+        output_device_select_message[str(chat_id)] = telegram_bot_execute("sendMessage", {"chat_id": chat_id, "text":text, "reply_markup": {"inline_keyboard": t}})["result"]["message_id"]
+        return False
+    if text.startswith("/video "):
+        player["drm-connector"] = text.strip("/video ")
+        config["Player"]["AudioDevice"]=player["drm-connector"]
         with open("config.ini", "w") as f:
             config.write(f)
         if str(chat_id) in output_device_select_message:
@@ -620,7 +639,7 @@ def bot_command(text, chat_id, chat_name=None):
                 info=ydl.extract_info(filename, download=True)
                 filename = ydl.prepare_filename(info)
         if watching:
-            open('cache/started/%s.started'%filename.split('/')[-1], 'a').close()
+            open('cache/started/%s.started'%filename.split('/')[-1].split('=')[-1], 'a').close()
         try:
             get_thumbnail_for_downloader(get_info(og_filename), filename)
         except Exception:
@@ -792,6 +811,7 @@ def telegram_bot_send_message_all(text, entries=None, silent=True, pinned=True):
     global shuffle
     global current_telegram_message
 
+
     if pinned:
         firstrow=[]
         if player is not None:
@@ -812,25 +832,37 @@ def telegram_bot_send_message_all(text, entries=None, silent=True, pinned=True):
         current_telegram_message = (text,keyboard)
         for message, chat in last_global_messages:
             if entries is None:
-                telegram_bot_execute("editMessageText", {"chat_id": chat, "message_id": message, "text":text, "reply_markup": {"inline_keyboard": keyboard}})
+                try:
+                    telegram_bot_execute("editMessageText", {"chat_id": chat, "message_id": message, "text":text, "reply_markup": {"inline_keyboard": keyboard}})
+                except Exception:
+                    print("[Exception whilst updating status update] "+traceback.format_exc())
+                    return
             else:
-                telegram_bot_execute("editMessageText", {"chat_id": chat, "message_id": message, "text": text, "entities": entries, "reply_markup": {"inline_keyboard": keyboard}})
+                try:
+                    telegram_bot_execute("editMessageText", {"chat_id": chat, "message_id": message, "text": text, "entities": entries, "reply_markup": {"inline_keyboard": keyboard}})
+                except Exception:
+                    print("[Exception whilst updating status update] "+traceback.format_exc())
+                    return
         return
 
     if pinned:
         last_global_messages = []
     for chat in config["Telegram"]["Chats"].split(","):
         if chat!="":
-            if not pinned:
-                result = telegram_bot_send_message(text, chat, entries, silent)["result"]
-            else:
-                if entries is None:
-                    result=telegram_bot_execute("sendMessage", {"chat_id": chat, "text":text, "reply_markup": {"inline_keyboard": keyboard}})["result"]
+            try:
+                if not pinned:
+                    result = telegram_bot_send_message(text, chat, entries, silent)["result"]
                 else:
-                    result=telegram_bot_execute("sendMessage", {"chat_id": chat, "text": text, "entities": entries, "reply_markup": {"inline_keyboard": keyboard}})["result"]
-            if pinned:
-                telegram_bot_execute("pinChatMessage",{"chat_id":chat, "message_id":result["message_id"], "disable_notification":True})
-                last_global_messages.append((result["message_id"],chat))
+                    if entries is None:
+                        result=telegram_bot_execute("sendMessage", {"chat_id": chat, "text":text, "reply_markup": {"inline_keyboard": keyboard}})["result"]
+                    else:
+                        result=telegram_bot_execute("sendMessage", {"chat_id": chat, "text": text, "entities": entries, "reply_markup": {"inline_keyboard": keyboard}})["result"]
+                if pinned:
+                    telegram_bot_execute("pinChatMessage",{"chat_id":chat, "message_id":result["message_id"], "disable_notification":True})
+                    last_global_messages.append((result["message_id"],chat))
+            except Exception:
+                print("[Exception during status update] "+traceback.format_exc())
+                return
 
 def render_telegram_info(filename, title, text, entities):
     try:
@@ -878,7 +910,7 @@ def telegram_send_started(silent=True):
         text+="\U0001FAAB %02d%% "%battery.percent
     if player is not None and not player.idle_active and player.filename:
         offset=len(text.encode('utf-16-le'))//2
-        if player.seeking:
+        if player.seeking or player.paused_for_cache:
             text+="Loading:\n"
         else:
             text+="Currently playing:\n"
@@ -1258,6 +1290,11 @@ def get_info(videourl):
         if not videourl.startswith("https://www.youtu") and not videourl.startswith('https://youtu'):
             del info['uploader']
     except Exception:
+        for ele in player.playlist:
+            if "filename" in ele and ele["filename"]==videourl:
+                if "title" in ele:
+                    return {"title": ele["title"], "id": ele["filename"]}
+                return {"title": ele["filename"], "id": ele["filename"]}
         raise
     return info
 
@@ -1357,20 +1394,24 @@ def _get_ytdlp_info(url, endless=False):
 
 infolist={}
 
+from threading import Lock
+ytdlp_info_lock = Lock()
+
 def get_ytdlp_info(url, cache, endless=False):
-    infolist[url]=cache
-    info = None
-    os.makedirs(os.path.join(config["Folders"]["Cache"],"/".join(cache.split('/')[:-1])), exist_ok=True)
-    if os.path.exists(os.path.join(config["Folders"]["Cache"],cache)):
-        with open(os.path.join(config["Folders"]["Cache"],cache)) as f:
-            info=json.load(f)
-    if info is None or ttl()>info['ttl'] or info['endless']!=endless:
-        info=_get_ytdlp_info(url, endless)
-        info['ttl']=ttl()+60*15
-        info['endless']=endless
-        with open(os.path.join(config["Folders"]["Cache"],cache), "w") as f:
-            json.dump(info, f, indent="\t")
-    return info
+    with ytdlp_info_lock:
+        infolist[url]=cache
+        info = None
+        os.makedirs(os.path.join(config["Folders"]["Cache"],"/".join(cache.split('/')[:-1])), exist_ok=True)
+        if os.path.exists(os.path.join(config["Folders"]["Cache"],cache)):
+            with open(os.path.join(config["Folders"]["Cache"],cache)) as f:
+                info=json.load(f)
+        if info is None or ttl()>info['ttl'] or info['endless']!=endless:
+            info=_get_ytdlp_info(url, endless)
+            info['ttl']=ttl()+60*15
+            info['endless']=endless
+            with open(os.path.join(config["Folders"]["Cache"],cache), "w") as f:
+                json.dump(info, f, indent="\t")
+        return info
 
 screenoff=False
 def mpv_handle_start(event):
@@ -1380,13 +1421,14 @@ def mpv_handle_start(event):
         perform_shuffle()
         return
     filename = list(filter(lambda x: x['id']==event.data.playlist_entry_id, player.playlist))[0]['filename']
+    name=filename.split('/')[-1]
+    name=name.split('=')[-1]
+    if os.path.exists('cache/started/%s.started'%name):
+        os.remove('cache/started/%s.started'%name)
+    open('cache/started/%s.started'%name, 'a').close()
     sponsorblock(filename)
-    filename=filename.split('/')[-1]
-    if os.path.exists('cache/started/%s.started'%filename):
-        os.remove('cache/started/%s.started'%filename)
-    open('cache/started/%s.started'%filename, 'a').close()
-
     if player.vo_configured:
+        #print(player.video_params)
         if screenoff:
             player.stop_screensaver="no"
             if blank and "Blanking" in config:
@@ -1411,6 +1453,7 @@ def mpv_handle_end(event):
             telegram_bot_execute("deleteMessage",{"message_id":message,"chat_id":chat})
             del known_forwards[filename]
         filename=filename.split('/')[-1]
+        filename=filename.split('=')[-1]
         open('cache/watched/%s.watched'%filename, 'a').close()
         perform_shuffle()
 
@@ -1434,25 +1477,6 @@ def time_observer(value):
             alerted_low_battery = True
 
 
-
-def mpv_handle_play(video):
-    global player
-    if video is None:
-        return
-    create_player()
-
-    videopath="https://youtu.be/"+video
-    get_info(videopath) #prevents bad paths from entering the queue
-    playlist=list(map(lambda x: x['filename'],player.playlist[player.playlist_playing_pos:]))
-    if len(player.playlist) == 0:
-        player.play(videopath)
-    elif is_in_playlist(video) is not None:
-        player.playlist_remove(playlist.index(videopath))
-    elif player.idle_active:
-        player.play(videopath)
-    else:
-        player.playlist_append(videopath)
-    telegram_send_started()
 
 def camel_to_snake(name):
     name = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
@@ -1500,6 +1524,10 @@ def create_player():
         def observe_pause(_name, value):
             telegram_send_started(True)
 
+        @player.property_observer('paused-for-cache')
+        def observe_pause(_name, value):
+            telegram_send_started(True)
+
         @player.property_observer('idle-active')
         def observe_idle(_name, value):
             telegram_send_started(True)
@@ -1512,15 +1540,18 @@ def mpv_handle_play_file(path, by_telegram=False):
     get_info(path) #prevents bad paths from entering the queue
     create_player()
 
-    playlist=list(map(lambda x: x['filename'],player.playlist[player.playlist_playing_pos:]))
-    if len(player.playlist) == 0:
-        player.play(path)
-    elif is_in_playlist(path) is not None:
-        player.playlist_remove(playlist.index(path))
-    elif player.idle_active:
+    if len(player.playlist) == 0 or player.idle_active:
         player.play(path)
     else:
-        player.playlist_append(path)
+        for index,ele in enumerate(player.playlist[player.playlist_playing_pos:]):
+            if "filename" in ele and ele["filename"].split("/")[-1]==path.split("/")[-1]:
+                player.playlist_remove(index+player.playlist_pos)
+                break
+            elif "playlist-path" in ele and ele["playlist-path"].split("/")[-1]==path.split("/")[-1]:
+                player.playlist_remove(index+player.playlist_playing_pos)
+                break
+        else:
+            player.playlist_append(path)
     telegram_send_started()
 
 def mpv_handle_pause():
@@ -1848,17 +1879,17 @@ def user_subscribe(name):
 @app.route("/play/<video>")
 @app.route("/<int:index>/play/<video>")
 def home_play(video, index=0):
-    mpv_handle_play(video)
+    mpv_handle_play_file("https://www.youtube.com/watch?v="+video)
     return redirect('/#%s'%html_idify(video))
 
 @app.route("/user/<name>/play/<video>")
 def user_play(name, video):
-    mpv_handle_play(video)
+    mpv_handle_play_file("https://www.youtube.com/watch?v="+video)
     return redirect('/user/%s/#%s'%(name, video))
 
 @app.route("/user/<name>/endless/play/<video>")
 def user_play_endless(name, video):
-    mpv_handle_play(video)
+    mpv_handle_play_file("https://www.youtube.com/watch?v="+video)
     return redirect('/user/%s/endless/#%s'%(name, html_idify(video)))
 
 @app.route("/user/")
@@ -1889,7 +1920,7 @@ def user_endless(name):
 
 @app.route("/channel/<name>/play/<video>")
 def channel_play(name, video):
-    mpv_handle_play(video)
+    mpv_handle_play_file("https://www.youtube.com/watch?v="+video)
     return redirect('/channel/%s/#%s'%(name, html_idify(video)))
 
 @app.route("/channel/<name>/pause")
@@ -1907,7 +1938,7 @@ def home_pause(index=0):
 def channel(name, videoid=None):
     if '..' in name or '/' in name:
         return
-    mpv_handle_play(videoid)
+    mpv_handle_play_file("https://www.youtube.com/watch?v="+videoid)
     info = get_ytdlp_info("https://www.youtube.com/channel/%s/videos"%name, "channel/%s.json"%name)
     return generate_page(generate_channelpage(info), info['channel'])
 
@@ -1921,7 +1952,7 @@ def channel_endless(name):
 
 @app.route("/search/<name>/play/<video>")
 def search_play(name, video):
-    mpv_handle_play(video)
+    mpv_handle_play_file("https://www.youtube.com/watch?v="+video)
     return redirect('/search/%s/#%s'%(name, html_idify(video)))
 
 @app.route("/search/<name>/pause")
@@ -1992,18 +2023,15 @@ def generate_home_page(index, subscriptions):
                     ment['uploader']=info['uploader']
                     ment['uploader_id']=info['uploader_id']
                     pages[i].append(ment)
-        html+='<section class="videogrid">'
         for page in pages:
             page=sorted(page, key=lambda info: info['uploader_id'])
             page=sorted(page, key=lambda info: os.path.exists('cache/started/%s.started'%info['id']))
+            yield '<section class="videogrid">'
             for info in page:
                 if not os.path.exists("cache/watched/%s.watched"%info["id"]):
-                    html+=generate_description(info, clickable=True)
-                    yield html
-                    html=""
-        html+="</section>"
-        html+="<h2 style='margin:auto;'><a href='%d'>Load more...</a></h2>"%windex
-        yield html
+                    yield generate_description(info, clickable=True)
+            yield "</section><hr/>"
+        yield "<h2 style='margin:auto;'><a href='%d'>Load more...</a></h2>"%windex
     #return html
 
 @app.route("/")
