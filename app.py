@@ -246,7 +246,7 @@ section.videogrid>figure, #oopnext>div>figure{
     margin: 0;
     margin-bottom: 16px;
 }
-figure details summary{
+figure details summary, .fakesummary{
     display: block;
     padding: 4px;
     background: linear-gradient(
@@ -262,7 +262,7 @@ figure details summary{
     border-bottom-right-radius: 4px;
     text-shadow: rgba(0,0,0,.5) 2px 3px 2px, black 0px 0px 2px;
 }
-figure details span{
+figure details span:not(.fakesummary){
     display: block;
     padding: 6px;
     height: 100px;
@@ -626,7 +626,7 @@ def bot_command(text, chat_id, chat_name=None):
     if text.startswith("/download") and player is not None and not player.pause:
         filename=" ".join(text.split(" ")[1:])
         watching=False
-        if filename=="":
+        if filename=="" or filename==None:
             filename=player.path
             watching=True
         og_filename=filename
@@ -1075,25 +1075,31 @@ def generate_thumbnail(info, uploader=None):
     return imgtag
 
 def generate_description(info, uploader=None, clickable=False, mainpage=True, fromhome=False):
+    if fromhome and not os.path.exists('cache/started/%s.started'%info['id']):
+        fromhome=False
     if 'fulltitle' in info:
         title=info['fulltitle']
     else:
         title=info['title']
-    if clickable and mainpage:
+    if clickable:
         html="<figure id='%s'>"%html_idify(info['id'].split('/')[-1])
     else:
         html="<figure>"
-    if clickable:
-        if "/" in info['id']:
-            html+="<a href=\"play/%s\">"%info['id'].split("/")[-1]
-        else:
-            html+="<a href=\"play/%s\">"%info['id']
-    if (not fromhome) or not os.path.exists('cache/started/%s.started'%info['id']):
-        html+=generate_thumbnail(info,uploader)
-    if clickable:
-        html+="</a>"
+    if not fromhome:
+        if clickable:
+            if "/" in info['id']:
+                html+="<a href=\"play/%s\">"%info['id'].split("/")[-1]
+            else:
+                html+="<a href=\"play/%s\">"%info['id']
+        if not fromhome:
+            html+=generate_thumbnail(info,uploader)
+        if clickable:
+            html+="</a>"
     html+="<figcaption>"
-    if not info['id'].startswith("/") and not info['id'].startswith("cache"):
+    if fromhome:
+        html+="<span class=\"fakesummary\">"
+        html+="<a href=\"play/%s\">"%info['id'].split("/")[-1]
+    elif not info['id'].startswith("/") and not info['id'].startswith("cache"):
         html+="<details data-source=\"/describe/%s\"><summary>"%info['id']
     else:
         if info['id'].startswith(os.path.join("cache","telegram")):
@@ -1120,12 +1126,14 @@ def generate_description(info, uploader=None, clickable=False, mainpage=True, fr
     elif os.path.exists('cache/started/%s.started'%info['id']):
         html+='[Started] '
     html+="<strong>%s</strong>"%title
+    if fromhome:
+        html+="</a>"
     if uploader is None and 'uploader' in info:
         if 'uploader_id' in info and info['uploader_id'] is not None:
             html+=' <a href="/user/%s/">%s</a>'%(info['uploader_id'][1:],info['uploader'])
         elif 'channel_id' in info and info['channel_id'] is not None:
             html+=' <a href="/channel/%s/">%s</a>'%(info['channel_id'],info['uploader'])
-    if not info['id'].startswith("/") and not info['id'].startswith("cache"):
+    if not info['id'].startswith("/") and not info['id'].startswith("cache") and not fromhome:
         html+="</summary>"
         html+="<span>"
         if 'description' in info and info['description'] is not None:
@@ -1133,6 +1141,8 @@ def generate_description(info, uploader=None, clickable=False, mainpage=True, fr
         html+="</span>"
         html+="</details>"
     else:
+        if fromhome:
+            html+="</span>"
         html+='</a>'
     html+="</figcaption></figure>"
     return html
@@ -2013,6 +2023,7 @@ def generate_home_page(index, subscriptions):
         for i in range(index):
             pages.append([])
         yield '<section class="videogrid">'
+        anydone=False
         for user in subscriptions:
             if user=='':
                 continue
@@ -2027,17 +2038,23 @@ def generate_home_page(index, subscriptions):
                 if i==0:
                     if not os.path.exists("cache/watched/%s.watched"%ment["id"]):
                         yield generate_description(ment, clickable=True, fromhome=True)
+                        anydone=True
                 else:
                     pages[i-1].append(ment)
-        yield "</section><hr/>"
+        if anydone:
+            yield "</section><hr/>"
         for page in pages:
             page=sorted(page, key=lambda info: info['uploader_id'])
             page=sorted(page, key=lambda info: os.path.exists('cache/started/%s.started'%info['id']))
-            yield '<section class="videogrid">'
+            html='<section class="videogrid">'
+            anydone=False
             for info in page:
                 if not os.path.exists("cache/watched/%s.watched"%info["id"]):
-                    yield generate_description(info, clickable=True, fromhome=True)
-            yield "</section><hr/>"
+                    anydone=True
+                    html+=generate_description(info, clickable=True, fromhome=True)
+            html+="</section><hr/>"
+            if anydone:
+                yield html
         yield "<h2 style='margin:auto;'><a href='%d'>Load more...</a></h2>"%windex
     #return html
 
