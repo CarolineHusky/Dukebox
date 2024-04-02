@@ -24,7 +24,7 @@ config=configparser.ConfigParser()
 config.optionxform=str
 config.read('config.ini')
 
-blank=False
+blank=True
 if blank:
     log = logging.getLogger('werkzeug')
     log.setLevel(logging.ERROR)
@@ -1074,7 +1074,7 @@ def generate_thumbnail(info, uploader=None):
     imgtag+='>'
     return imgtag
 
-def generate_description(info, uploader=None, clickable=False, mainpage=True):
+def generate_description(info, uploader=None, clickable=False, mainpage=True, fromhome=False):
     if 'fulltitle' in info:
         title=info['fulltitle']
     else:
@@ -1088,7 +1088,8 @@ def generate_description(info, uploader=None, clickable=False, mainpage=True):
             html+="<a href=\"play/%s\">"%info['id'].split("/")[-1]
         else:
             html+="<a href=\"play/%s\">"%info['id']
-    html+=generate_thumbnail(info,uploader)
+    if (not fromhome) or not os.path.exists('cache/started/%s.started'%info['id']):
+        html+=generate_thumbnail(info,uploader)
     if clickable:
         html+="</a>"
     html+="<figcaption>"
@@ -2011,25 +2012,31 @@ def generate_home_page(index, subscriptions):
         pages = []
         for i in range(index):
             pages.append([])
+        yield '<section class="videogrid">'
         for user in subscriptions:
-                if user=='':
+            if user=='':
+                continue
+            info = get_ytdlp_info("https://www.youtube.com/@%s/videos"%user, "user/%s.json"%user)
+            for i, ment in enumerate(info['entries']):
+                if 'availability' in ment and ment['availability'] is not None and ment['availability'] not in ('unlisted','public'):
                     continue
-                info = get_ytdlp_info("https://www.youtube.com/@%s/videos"%user, "user/%s.json"%user)
-                for i, ment in enumerate(info['entries']):
-                    if 'availability' in ment and ment['availability'] is not None and ment['availability'] not in ('unlisted','public'):
-                        continue
-                    ment['channel']=info['channel']
-                    ment['channel_id']=info['channel_id']
-                    ment['uploader']=info['uploader']
-                    ment['uploader_id']=info['uploader_id']
-                    pages[i].append(ment)
+                ment['channel']=info['channel']
+                ment['channel_id']=info['channel_id']
+                ment['uploader']=info['uploader']
+                ment['uploader_id']=info['uploader_id']
+                if i==0:
+                    if not os.path.exists("cache/watched/%s.watched"%ment["id"]):
+                        yield generate_description(ment, clickable=True, fromhome=True)
+                else:
+                    pages[i-1].append(ment)
+        yield "</section><hr/>"
         for page in pages:
             page=sorted(page, key=lambda info: info['uploader_id'])
             page=sorted(page, key=lambda info: os.path.exists('cache/started/%s.started'%info['id']))
             yield '<section class="videogrid">'
             for info in page:
                 if not os.path.exists("cache/watched/%s.watched"%info["id"]):
-                    yield generate_description(info, clickable=True)
+                    yield generate_description(info, clickable=True, fromhome=True)
             yield "</section><hr/>"
         yield "<h2 style='margin:auto;'><a href='%d'>Load more...</a></h2>"%windex
     #return html
