@@ -464,6 +464,7 @@ def bot_command(text, chat_id, chat_name=None):
     global user_update_lock
     global hook_sticker_state
     global output_device_select_message
+    text=text.strip()
     if not blank:
         if chat_name:
             print(("[telegram bot/%s] "%chat_name)+text)
@@ -638,12 +639,12 @@ def bot_command(text, chat_id, chat_name=None):
             with yt_dlp.YoutubeDL({"outtmpl": os.path.join(config["Folders"]["Uploads"],'%(title)s.%(ext)s'), "format": "bestvideo[ext!=webm]+bestaudio[ext!=webm]/best[ext!=webm]", "recode-video": "mp4", "remux-video": "mp4", "merge-output-format": "mp4"}) as ydl:
                 info=ydl.extract_info(filename, download=True)
                 filename = ydl.prepare_filename(info)
-        if watching:
-            open('cache/started/%s.started'%filename.split('/')[-1].split('=')[-1], 'a').close()
-        try:
-            get_thumbnail_for_downloader(get_info(og_filename), filename)
-        except Exception:
-            print(traceback.format_exc())
+            if watching:
+                open('cache/started/%s.started'%filename.split('/')[-1].split('=')[-1], 'a').close()
+            try:
+                get_thumbnail_for_downloader(get_info(og_filename), filename)
+            except Exception:
+                print(traceback.format_exc())
         file_stats=os.stat(filename)
         if file_stats.st_size<1024*1024*50:
             telegram_bot_send_document(chat_id, filename)
