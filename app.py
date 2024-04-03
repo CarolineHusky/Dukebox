@@ -1382,7 +1382,6 @@ def generate_footer():
             html+=": <strong>"+playlist[0]['title']+"</strong></summary>"
             if player.duration and player.time_pos:
                 html+="<input type='range' id='time' min='0' max='%d' value='%d'/>"%(int(player.duration),int(player.time_pos))
-                print(html)
             html+=generate_description(playlist[0], clickable=True, mainpage=False)
             yield html
             html=""
@@ -1427,7 +1426,7 @@ if(timeslider){
 timeslider.addEventListener("change", function(event) {
     fetch('/seek/'+timeslider.value).then((response) => {});
 });
-setInterval(function() {
+var interval=setInterval(function() {
     timeslider.value = parseInt(timeslider.value)+1;
     if(parseInt(timeslider.value) == parseInt(timeslider.max))
         fetch('/footer/')
@@ -1437,17 +1436,21 @@ setInterval(function() {
             var parser = new DOMParser();
             var doc = parser.parseFromString(html, "text/html");
             var footintern =  doc.querySelector('footer');
-            if(footintern)
+            if(footintern){
             footer.innerHTML = footintern.innerHTML;
-            else
+            timeslider = document.getElementById('time');
+            }
+            else{
+            clearInterval(interval);
             footer.remove();
+            }
             }
         );
 }, 1000);
 }
 if(volume)
 volume.addEventListener("change", function(event) {
-    fetch('/volume/'+timeslider.value).then((response) => {});
+    fetch('/volume/'+volume.value).then((response) => {});
 });
 </script>
     """.replace('\n','')
