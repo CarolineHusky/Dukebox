@@ -24,7 +24,7 @@ config=configparser.ConfigParser()
 config.optionxform=str
 config.read('config.ini')
 
-blank=True
+blank=False
 if blank:
     log = logging.getLogger('werkzeug')
     log.setLevel(logging.ERROR)
@@ -662,6 +662,10 @@ def bot_command(text, chat_id, chat_name=None):
                 filename = ydl.prepare_filename(info)
             if watching:
                 open('cache/started/%s.started'%filename.split('/')[-1].split('=')[-1], 'a').close()
+            if "UploadsInfo" in config["Folders"]:
+                os.makedirs(config["Folders"]["UploadsInfo"], exist_ok=True)
+                with open(os.path.join(os.path.expanduser(config["Folders"]["UploadsInfo"]),filename.split('/')[-1].split('=')[-1]+".json"), "w") as f:
+                    json.dump(info, f, indent="\t")
             try:
                 get_thumbnail_for_downloader(get_info(og_filename), filename)
             except Exception:
@@ -1107,10 +1111,10 @@ def generate_description(info, uploader=None, clickable=False, mainpage=True, fr
     elif not info['id'].startswith("/") and not info['id'].startswith("cache"):
         html+="<details data-source=\"/describe/%s\"><summary>"%info['id']
     else:
-        if info['id'].startswith(os.path.join("cache","telegram")):
-            html+="<a class='song' href=\"play/%s\">"%info['title']
-        else:
+        if info['id'].startswith(os.path.expanduser(config["Folders"]["Music"])):
             html+="<a class='song' href=\"/music/play/%s\">"%info['title']
+        else:
+            html+="<a class='song' href=\"play/%s\">"%info['id'].split("/")[-1]
     if is_in_playlist(info['id']) is not None:
         index = is_in_playlist(info['id'])
         if index==0:
@@ -1279,6 +1283,14 @@ def get_info(videourl):
     if videourl is None:
         raise Exception("Broken link")
     if not videourl.strip().startswith("http"):
+        if "UploadsInfo" in config["Folders"]:
+            os.makedirs(config["Folders"]["UploadsInfo"], exist_ok=True)
+            filename=os.path.join(os.path.expanduser(config["Folders"]["UploadsInfo"]),videourl.split('/')[-1].split('=')[-1]+".json")
+            if os.path.exists(filename):
+                with open(filename) as f:
+                    info = json.load(f)
+                    info["id"] = videourl
+                    return info
         thumbnail=get_thumbnail(videourl)
         name = videourl.split("/")[-1]
         name_regular = name.replace("%20"," ").replace("_"," ")
