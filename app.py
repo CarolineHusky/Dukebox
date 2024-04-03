@@ -146,6 +146,10 @@ input#search {
     text-shadow: white 0px 0px 1px, white 0px 0px 3px;
     text-transform: uppercase;
 }
+input#time{
+    width: 100%;
+    margin-top: 1em;
+}
 input[type="range"] {
   -webkit-appearance: none;
   appearance: none;
@@ -189,6 +193,14 @@ input[type="range"]::-moz-range-progress {
     border-bottom-left-radius: 4px;
     border: 1px solid rgba(128,128,128,.25);
     box-shadow: 0 0 10px 1px rgba(0,0,0,.25);
+}
+input[type="range"]#time::-moz-range-progress {
+    background: linear-gradient(
+        rgba(0,128,255, .75),
+        rgba(0,112,224, .50), 50%,
+        rgba(0,64,128, .75), 75%,
+        rgba(0,96,192, .75)
+    );
 }
 input[type="range"]::-moz-range-thumb {
     opacity: 0;
@@ -907,7 +919,10 @@ def render_telegram_info(filename, title, text, entities):
                 url = home_url + "channel/%s"%entry['channel_id']
                 entities.append({"type": "text_link", "offset": offset, "length": length, "url": url})
             text+=": "
-    text+="%s"%entry['title'].replace("@","\uFF20")
+    filetitle=entry['id']
+    if 'title' in entry:
+        filetitle=entry['title']
+    text+="%s"%filetitle.replace("@","\uFF20")
     if 'tumblr_url' in entry:
         length=len(text.encode('utf-16-le'))//2-offset
         entities.append({"type": "text_link", "offset": offset, "length": length, "url": entry['tumblr_url']})
@@ -1355,24 +1370,19 @@ def get_safe_playlist():
             print(traceback.format_exc())
             yield {"id": ele["filename"], "title": ele["title"]}
 
-def generate_page(page, title):
-    html="<html><head><title>%s</title><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"%title#<link rel=\"stylesheet\" href=\"/style.css\">"%title
-    html+="<style>"+style()+"</style>"
-    if player is not None and not player.pause and player.time_remaining is not None and blank:
-        html+="<meta http-equiv=\"refresh\" content=\"%d\">"%(player.time_remaining+random.randint(5,10))
-    html+="</head><body>"
-    html+="<header><form action='/search/' method='GET'><input id='search' name='search'/><button id='searchbutton' type='submit'>Search YT</button></form>"
-    html+="</header>"
-    yield html
+def generate_footer():
     html=""
     if player is not None and not player.idle_active:
         playlist=list(get_safe_playlist())
         if len(playlist)>0:
-            html+="<footer><div>"
+            html+="<footer id='footer'><div>"
             html+="<details id='oopnext'><summary>Currently playing"
             if len(playlist)>1:
                 html+=" (%d)"%len(playlist)
             html+=": <strong>"+playlist[0]['title']+"</strong></summary>"
+            if player.duration and player.time_pos:
+                html+="<input type='range' id='time' min='0' max='%d' value='%d'/>"%(int(player.duration),int(player.time_pos))
+                print(html)
             html+=generate_description(playlist[0], clickable=True, mainpage=False)
             yield html
             html=""
@@ -1389,11 +1399,55 @@ def generate_page(page, title):
                 html+="<a id='resume' href='pause'>Pause</a>"
             html+="<input type='range' id='volume' min='0' max='100' value='%d'/>"%player.volume
             html+="</div></footer>"
+    yield html
+
+def generate_page(page, title):
+    html="<html><head><title>%s</title><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"%title#<link rel=\"stylesheet\" href=\"/style.css\">"%title
+    html+="<style>"+style()+"</style>"
+    if player is not None and not player.pause and player.time_remaining is not None and blank:
+        html+="<meta http-equiv=\"refresh\" content=\"%d\">"%(player.time_remaining+random.randint(5,10))
+    html+="</head><body>"
+    html+="<header><form action='/search/' method='GET'><input id='search' name='search'/><button id='searchbutton' type='submit'>Search YT</button></form>"
+    html+="</header>"
+    yield html
+    for ele in generate_footer():
+        yield ele
+    html=""
     html+="""
 <script>
 var volume = document.getElementById('volume');
+if(volume)
 volume.addEventListener("change", function(event) {
     fetch('/volume/'+volume.value).then((response) => {});
+});
+var footer = document.getElementById('footer');
+var timeslider = document.getElementById('time');
+if(timeslider){
+
+timeslider.addEventListener("change", function(event) {
+    fetch('/seek/'+timeslider.value).then((response) => {});
+});
+setInterval(function() {
+    timeslider.value = parseInt(timeslider.value)+1;
+    if(parseInt(timeslider.value) == parseInt(timeslider.max))
+        fetch('/footer/')
+        .then(r => r.text())
+        .then(function(html)
+            {
+            var parser = new DOMParser();
+            var doc = parser.parseFromString(html, "text/html");
+            var footintern =  doc.querySelector('footer');
+            if(footintern)
+            footer.innerHTML = footintern.innerHTML;
+            else
+            footer.remove();
+            }
+        );
+}, 1000);
+}
+if(volume)
+volume.addEventListener("change", function(event) {
+    fetch('/seek/'+timeslider.value).then((response) => {});
 });
 </script>
     """.replace('\n','')
@@ -1417,13 +1471,6 @@ details.forEach((detail) => {
         }).catch(response => console.log(response.status,response.statusText));
     });
 });
-var search = document.getElementById('search');
-var searchbutton = document.getElementById('searchbutton');
-//searchbutton.addEventListener("click", function(event) {
-//    if(search.value){
-//        window.location.href = '/search/'+ search.value;
-//    }
-//});
 </script>
 """.replace('\n','')
     html+="</body></html>"
@@ -1816,14 +1863,7 @@ def download(filename):
     if "/" in filename:
         return
     return send_from_directory(config["Folders"]["Uploads"], filename)
-
-@app.route("/delete/<filename>")
-def delete(filename):
-    if "/" in filename:
-        return
-    os.remove(os.path.join(config["Folders"]["Uploads"], filename))
-    return redirect("/download/")
-
+    
 @app.route("/download/")
 def telegram_download():
     return generate_page(generate_telegrampage(None, True), "Download")
@@ -2102,6 +2142,10 @@ def home(index=0):
     subscriptions=request.cookies.get('subscriptions')
     return generate_page(generate_home_page(index, subscriptions), 'Mii\'s Dukebox!')
 
+@app.route("/footer/")
+def footer():
+    return generate_footer()
+
 @app.route("/describe/<videoid>/")
 def describe(videoid):
     if '..' in videoid or '/' in videoid:
@@ -2113,6 +2157,13 @@ def describe(videoid):
 def volume(value):
     if player is not None:
         player.volume=value
+    return ""
+
+@app.route("/seek/<int:value>")
+def seek(value):
+    if player is not None:
+        seekpos = max(0, min(player.duration,value))
+        player.seek(seekpos,"absolute")
     return ""
 
 def ttl(seconds=60*20):
@@ -2146,8 +2197,6 @@ def quit(*args, **kwargs):
         for message, chat in last_global_messages:
             telegram_bot_execute("unpinAllChatMessages", {"chat_id": chat})
             telegram_bot_execute("deleteMessage",{"message_id":message,"chat_id":chat})
-    #if other_thread:
-    #    other_thread.terminate()
     if shutdown and "Blanking" in config:
         os.system(config["Blanking"]["Shutdown"])
     sys.exit(0)
