@@ -88,6 +88,9 @@ main > a:first-child{
     display: inline-block;
     padding-top: 8px;
 }
+main{
+    padding-bottom: 25vh;
+}
 footer {
     position: fixed;
     bottom: 0px;
@@ -231,8 +234,8 @@ img {
     width: 100%;
 }
 section.videogrid{
+    display:block;
     overflow-y: hidden;
-    width: 100%;
     display: flex;
     flex-wrap: wrap;
     margin-top: 1em;
@@ -281,6 +284,12 @@ figure details span:not(.fakesummary){
     text-shadow: rgba(0,0,0,.5) 2px 3px 2px, black 0px 0px 2px;
     border-bottom-left-radius: 8px;
     border-bottom-right-radius: 8px;
+}
+figure.notyt figcaption{
+    margin-left: 8px;
+    margin-right: 8px;
+    padding-top: 8px;
+    padding-bottom: 12px;
 }
 footer details .song{
     margin-left: 8px;
@@ -658,7 +667,7 @@ def bot_command(text, chat_id, chat_name=None):
             telegram_bot_send_message(text, chat_id, {"type": "italic", "offset": 0, "length": length})
             telegram_bot_execute("sendChatAction",{"chat_id":chat_id,"action":"typing"})
             with yt_dlp.YoutubeDL({"outtmpl": os.path.join(config["Folders"]["Uploads"],'%(title)s.%(ext)s'), "format": "bestvideo[ext!=webm]+bestaudio[ext!=webm]/best[ext!=webm]", "recode-video": "mp4", "remux-video": "mp4", "merge-output-format": "mp4"}) as ydl:
-                info=ydl.extract_info(filename, download=True)
+                info=ydl.sanitize_info(ydl.extract_info(filename, download=True))
                 filename = ydl.prepare_filename(info)
             if watching:
                 open('cache/started/%s.started'%filename.split('/')[-1].split('=')[-1], 'a').close()
@@ -689,6 +698,10 @@ def telegram_bot_process_updates():
     has_updates=False
     important_command=False
     for update in telegram_bot_get_updates():
+        botname="[Telegram bot"
+        if "first_name" in update["chat"]:
+            botname+="/"+update["chat"]["first_name"]
+        botname+="]"
         for ele in update:
             if ele=="text":
                 text=update[ele]
@@ -708,7 +721,7 @@ def telegram_bot_process_updates():
                 for entity in update[ele]:
                     if entity["type"]=="url" and "text" in update:
                         text=update["text"][entity["offset"]:entity["offset"]+entity["length"]]
-                        print("[Telegram bot]",text)
+                        print(botname,text)
                         important_command=True
                         result = play_url(text)
                         if result is not None:
@@ -717,7 +730,7 @@ def telegram_bot_process_updates():
                             has_updates=True
                     if entity["type"]=="text_link":
                         text=entity["url"]
-                        print("[Telegram bot]",text)
+                        print(botname,text)
                         important_command=True
                         result = play_url(text)
                         if result is not None:
@@ -760,6 +773,7 @@ def telegram_bot_process_updates():
                         else:
                             download_file=telegram_bot_download_file(update[ele]["file_id"],update[ele]["set_name"]+" "+update[ele]["emoji"], update["chat"]["id"], update["message_id"])
                         if player is not None and download_file is not None:
+                            print(botname, "Sticker "+update[ele]["set_name"]+update[ele]["emoji"]+": "+download_file)
                             if player.path == download_file:
                                 player.seek(0,"absolute")
                             else:
@@ -778,6 +792,7 @@ def telegram_bot_process_updates():
                     else:
                         download_file=telegram_bot_download_file(update[ele]["file_id"], None, update["chat"]["id"], update["message_id"])
                     if download_file is not None:
+                        print(botname,"File: ",download_file)
                         mpv_handle_play_file(download_file, True)
                         has_updates=True
                     #print(download_file)
@@ -796,6 +811,7 @@ def telegram_bot_process_updates():
                     download_file=telegram_bot_download_file(bestphoto["file_id"],bestphoto["file_unique_id"], update["chat"]["id"], update["message_id"])
                 else:
                     download_file=telegram_bot_download_file(bestphoto['file_id'], None, update["chat"]["id"], update["message_id"])
+                print(botname,"Photo: ",download_file)
                 mpv_handle_play_file(download_file, True)
                 has_updates=True
         if not important_command:
@@ -1091,7 +1107,10 @@ def generate_description(info, uploader=None, clickable=False, mainpage=True, fr
     else:
         title=info['title']
     if clickable:
-        html="<figure id='%s'>"%html_idify(info['id'].split('/')[-1])
+        if not info['id'].startswith("/") and not info['id'].startswith("cache"):
+            html="<figure id=\"%s\">"%html_idify(info['id'].split('/')[-1])
+        else:
+            html="<figure class='notyt' id=\"%s\">"%html_idify(info['id'].split('/')[-1])
     else:
         html="<figure>"
     if not fromhome:
@@ -1417,7 +1436,7 @@ def _get_ytdlp_info(url, endless=False):
     else:
         ydl_opts = {'extract_flat': 'in_playlist', "quiet": "true", 'playlistend': 36  }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+        info = ydl.sanitize_info(ydl.extract_info(url, download=False))
     return info
 
 infolist={}
@@ -2057,8 +2076,9 @@ def generate_home_page(index, subscriptions):
                         anydone=True
                 else:
                     pages[i-1].append(ment)
+        yield "</section>"
         if anydone:
-            yield "</section><hr/>"
+            yield "<hr/>"
         for page in pages:
             page=sorted(page, key=lambda info: info['uploader_id'])
             page=sorted(page, key=lambda info: os.path.exists('cache/started/%s.started'%info['id']))
