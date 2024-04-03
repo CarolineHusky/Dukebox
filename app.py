@@ -1447,7 +1447,7 @@ setInterval(function() {
 }
 if(volume)
 volume.addEventListener("change", function(event) {
-    fetch('/seek/'+timeslider.value).then((response) => {});
+    fetch('/volume/'+timeslider.value).then((response) => {});
 });
 </script>
     """.replace('\n','')
@@ -1863,7 +1863,7 @@ def download(filename):
     if "/" in filename:
         return
     return send_from_directory(config["Folders"]["Uploads"], filename)
-    
+
 @app.route("/download/")
 def telegram_download():
     return generate_page(generate_telegrampage(None, True), "Download")
@@ -2197,6 +2197,8 @@ def quit(*args, **kwargs):
         for message, chat in last_global_messages:
             telegram_bot_execute("unpinAllChatMessages", {"chat_id": chat})
             telegram_bot_execute("deleteMessage",{"message_id":message,"chat_id":chat})
+    #if other_thread:
+    #    other_thread.terminate()
     if shutdown and "Blanking" in config:
         os.system(config["Blanking"]["Shutdown"])
     sys.exit(0)
