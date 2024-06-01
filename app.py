@@ -35,7 +35,7 @@ MUSIC_FOLDER=os.path.expanduser(config["Folders"]["Music"])
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = os.path.join("cache","telegram")
 
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'mp4', 'mkv', 'webp', 'webm'}
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'mp4', 'mkv', 'webp', 'webm', 'mp3'}
 
 import mpv
 
@@ -315,6 +315,238 @@ small{
 }
     """.replace('\n','')
 
+
+subtitle_font={
+" ": [
+"    ",
+"    ",
+"    ",
+"    "],
+"a": [
+"     ",
+" ──┐ ",
+"┌──┤ ",
+"└──┴ "],
+"b": [
+"┬    ",
+"├──┐ ",
+"│  │ ",
+"┴──┘ "],
+"c": [
+"     ",
+"┌──┐ ",
+"│    ",
+"└──┘ "],
+"d": [
+"   ┬ ",
+"┌──┤ ",
+"│  │ ",
+"└──┴ "],
+"e": [
+"     ",
+"┌──┐ ",
+"├──┘ ",
+"└──  "],
+"f": [
+"    ",
+"┌── ",
+"├── ",
+"┴   "],
+"g": [
+"     ",
+"┌──┐ ",
+"│ ─┐ ",
+"└──┘ "],
+"h": [
+"┬    ",
+"├──┐ ",
+"│  │ ",
+"┴  ┴ "],
+"i": [
+"o  ",
+"┐  ",
+"│  ",
+"┴  "],
+"j": [
+"  o ",
+"  ┐ ",
+"  │ ",
+"└─┘ "],
+"k": [
+"┬     ",
+"│ ┌─┘ ",
+"│─┤   ",
+"┴ └─┐ "],
+"l": [
+" ┐  ",
+" │  ",
+" │  ",
+" ┴  "],
+"m": [
+"      ",
+"┬─┬─┐ ",
+"│ │ │ ",
+"┴   ┴ "],
+"n": [
+"     ",
+"┬──┐ ",
+"│  │ ",
+"┴  ┴ "],
+"o": [
+"     ",
+"┌──┐ ",
+"│  │ ",
+"└──┘ "],
+"p": [
+"     ",
+"┬──┐ ",
+"├──┘ ",
+"┴    "],
+"q": [
+"     ",
+"┌──┬ ",
+"└──┤ ",
+"   ┴ "],
+"r": [
+"    ",
+"┬─┐ ",
+"│   ",
+"┴   "],
+"s": [
+"    ",
+"┌─┐ ",
+"└─┐ ",
+"└─┘ "],
+"t": [
+"┐   ",
+"├─  ",
+"│   ",
+"└─┘ "],
+"u": [
+"     ",
+"┐  ┐ ",
+"│  │ ",
+"└──┴ "],
+"v": [
+"     ",
+"┌  ┐ ",
+"└┐┌┘ ",
+" └┘  "],
+"w": [
+"      ",
+"┐   ┐ ",
+"│ │ │ ",
+"┴─┴─┘ "],
+"x": [
+"    ",
+"\\ / ",
+" X  ",
+"/ \\ "],
+"y": [
+"     ",
+"┬  ┬ ",
+"└──┤ ",
+" ──┘ "],
+"z": [
+"     ",
+" ──┬ ",
+" ┌─┘ ",
+" ┴── "],
+"'": [
+"  ",
+"┘ ",
+"  ",
+"  "],
+",": [
+"  ",
+"  ",
+"  ",
+"┘ "],
+".": [
+"  ",
+"  ",
+"  ",
+"o "],
+"!": [
+"│ ",
+"│ ",
+"┴ ",
+"o ",],
+"?": [
+"┌─┐",
+" ┌┘",
+" ┴ ",
+" o "],
+";": [
+"  ",
+"o ",
+"  ",
+"┘ ",],
+"-": [
+"  ",
+"  ",
+"─ ",
+"  "],
+":": [
+"  ",
+"o ",
+"  ",
+"o "],
+"(": [
+"┌─ ",
+"│  ",
+"│  ",
+"└─ "],
+"[": [
+"┌─ ",
+"│  ",
+"│  ",
+"└─ "],
+")": [
+"─┐ ",
+" │ ",
+" │ ",
+"─┘ "],
+"]": [
+"─┐ ",
+" │ ",
+" │ ",
+"─┘ "],
+}
+
+widefont={"│": "║", "┌":"╓", "┐": "╖", "└":"╙", "┘": "╜", "├": "╟", "┤": "╢", "┬": "╥", "┴":"╨", "┼":"╬", "/":"╱", "\\": "╲", "X":"╳"}
+
+def print_large(text):
+    text=text.lower()
+    rows=[]
+    for i in range(4):
+        rows.append("")
+    for letter in text:
+        if letter=="\n":
+            for i in range(4):
+                rows.append("")
+        if letter in subtitle_font:
+            for i in range(4):
+                line=subtitle_font[letter][i]
+                out=""
+                for char in line:
+                    if char in widefont:
+                        out+=widefont[char]
+                    else:
+                        out+=char
+                rows[-4+i]+=out+"\0"
+    out=""
+    for row in rows:
+        if len(row)>240:
+            if len(row.replace("\0",""))>240:
+                out+=row.replace(" \0","")[:240].center(240)+"\n"
+            else:
+                out+=row.replace("\0","")[:240].center(240)+"\n"
+        else:
+            out+=row.replace("\0"," ")[:240].center(240)+"\n"
+    print(out+"\n")
+
+
 home_url = ""
 shutdown = False
 
@@ -370,6 +602,7 @@ def telegram_bot_execute(command, data=None, method=None):
             raise ValueError("File too big")
         print("ERROR:")
         print(body)
+        print(command, data)
         raise
 
 user_update_lock=None
@@ -494,8 +727,13 @@ def bot_command(text, chat_id, chat_name=None):
     if text.startswith("/vol"):
         player.volume = max(0, min(300,int(text.split(" ")[-1])))
         return False
+    if text.startswith("/speedcore"):
+        player.speed = 45.0/33
+        player["audio-pitch-correction"] = False
+        return False
     if text.startswith("/speed"):
         player.speed = float(text.lstrip("/speed "))
+        player["audio-pitch-correction"] = True
         return False
     if text.startswith("/sub"):
         player['sub-visibility']=True
@@ -992,7 +1230,68 @@ def telegram_send_started(silent=True):
     text+=" or send a file or link!"
     telegram_bot_send_message_all(text, entities, silent)
 
+#scrapy scrapy
+ALLOWED_EXTENSIONS = {'mp4', 'mkv', 'webm', 'mp3', 'aac', 'flac'}
 
+def get_source_links(url):
+    import urllib.request, bs4
+    headers = {
+    'User-Agent': "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0"
+    }
+    try:
+        request=urllib.request.Request(url, headers=headers)
+        for link in bs4.BeautifulSoup(urllib.request.urlopen(request, timeout=4), features="html5lib").find_all("a"):
+            if link.has_attr('href'):
+                yield link['href']
+    except urllib.error.URLError:
+        print(url,traceback.format_exc())
+        return []
+
+def scrape_google(query):
+    import urllib.parse
+    query = urllib.parse.quote_plus(query)
+    #links = get_source_links("https://www.google.co.uk/search?q=" + query)
+    links = get_source_links("https://duckduckgo.com/html/?q=" + query)
+    google_domains = ('https://www.google.',
+                      'https://google.',
+                      'https://webcache.googleusercontent.',
+                      'http://webcache.googleusercontent.',
+                      'https://policies.google.',
+                      'https://support.google.',
+                      'https://maps.google.',
+                      'https://www.youtube.com')
+
+    for url in links:
+        if url.startswith("//duckduckgo.com/l/?uddg="):
+            url=url.lstrip("//duckduckgo.com/l/?uddg=")
+            url=urllib.parse.unquote_plus(url.split("&")[0])
+        if not url.startswith('http'):
+            continue
+        if "google" in url:
+            continue
+        if url.startswith(google_domains):
+            continue
+        yield url
+
+def simpleid(text):
+    out=""
+    for letter in text.lower():
+        if letter in "abcdefghijklmnopqrstuvwxyz":
+            out+=letter
+    return out
+
+def search_results_deepweb(query):
+    from urllib.parse import urljoin, unquote_plus
+    for url in set(scrape_google("-inurl:(htm|html|php) intitle:\"index of\" + \"last modified\" + \"parent directory\" + \"mp3\" + \""+query+"\"")):
+        links = get_source_links(url)
+        for ele in links:
+            if ele.split(".")[-1].lower() in ALLOWED_EXTENSIONS and simpleid(query) in simpleid(ele):
+                hashie=int.from_bytes(hashlib.sha256(urljoin(url,ele).encode('utf-8')).digest()[:8], byteorder='big', signed=True)
+                with open("cache/search/%d.txt"%hashie, "w") as f:
+                    f.write(urljoin(url,ele))
+                yield {"title": unquote_plus(ele.split("/")[-1]), "id": "%d"%hashie}
+
+#sponsorblock
 sponsorblock_times=[]
 
 # based on https://github.com/po5/mpv_sponsorblock/blob/master/sponsorblock_shared/sponsorblock.py
@@ -1040,10 +1339,7 @@ def is_in_playlist(video):
     global player
     if player == None or player.idle_active:
         return None
-    videopath="https://youtu.be/"+video
     playlist=list(map(lambda x: x['filename'],player.playlist[player.playlist_playing_pos:]))
-    if videopath in playlist:
-        return playlist.index(videopath)
     if video in playlist:
         return playlist.index(video)
     return None
@@ -1142,7 +1438,7 @@ def generate_description(info, uploader=None, clickable=False, mainpage=True, fr
     if fromhome:
         html+="<span class=\"fakesummary\">"
         html+="<a href=\"play/%s\">"%info['id'].split("/")[-1]
-    elif not info['id'].startswith("/") and not info['id'].startswith("cache"):
+    elif ("ie_key" in info and info["ie_key"].lower()=="youtube") or "youtu" in info["id"]:
         html+="<details data-source=\"/describe/%s\"><summary>"%info['id']
     else:
         if info['id'].startswith(os.path.expanduser(config["Folders"]["Music"])):
@@ -1211,22 +1507,28 @@ def generate_channelpage(info, endless=False, subscriptions=None):
         yield "<h2 style='margin:auto;'><a href='endless/#%s'>Load all...</a></h2>"%html_idify(info['entries'][-1]['id'])
     return html
 
-def generate_searchpage(info,searchterm, songsearch):
+def generate_searchpage(info,searchterm, songsearch, deepwebsearch):
     html="<h1><small>Searched for: </small>%s</h1>"%(searchterm)
     html+="<a href=\"/\">Home</a>"
+    yield html
     if len(songsearch)>0:
-        html+="<h2><small>From the </small>local music library:</h2>"
+        html="<h2><small>From the </small>local music library:</h2>"
         html+="<table><tbody>"
         html+="<tr><th></th><th>Artist</th><th colspan=\"2\">Album</th><th>Song</th></tr>"
+        yield html
         for song in songsearch:
-            html+=generate_music_row(*song)
-        html+="</tbody></table>"
-        html+="<h2><small>From </small>YouTube:</h2>"
-    html+="<section class='videogrid'>"
+            yield generate_music_row(*song)
+        yield "</tbody></table>"
+        found=False
+        for ele in deepwebsearch:
+            if not found:
+                yield "<h2><small>From </small>The Deep Web:</h2>"
+            yield generate_description(ele, clickable=True)
+            found=True
+    yield "<h2><small>From </small>YouTube:</h2><section class='videogrid'>"
     for ele in info['entries']:
-        html+=generate_description(ele, clickable=True)
-    html+="</section>"
-    return html
+        yield generate_description(ele, clickable=True)
+    yield "</section>"
 
 def get_order(filename):
     #if player is not None:
@@ -1382,6 +1684,8 @@ def generate_footer():
             html+=": <strong>"+playlist[0]['title']+"</strong></summary>"
             if player.duration and player.time_pos:
                 html+="<input type='range' id='time' min='0' max='%d' value='%d'/>"%(int(player.duration),int(player.time_pos))
+            else:
+                html+="<input type='range' id='time' min='0' max='3' value='0'/>"
             html+=generate_description(playlist[0], clickable=True, mainpage=False)
             yield html
             html=""
@@ -1504,6 +1808,8 @@ def get_ytdlp_info(url, cache, endless=False):
                 info=json.load(f)
         if info is None or ttl()>info['ttl'] or info['endless']!=endless:
             info=_get_ytdlp_info(url, endless)
+            if "extractor" in info and "ie_key" not in info:
+                info["ie_key"]=info["extractor"]
             info['ttl']=ttl()+60*15
             info['endless']=endless
             with open(os.path.join(config["Folders"]["Cache"],cache), "w") as f:
@@ -1579,6 +1885,19 @@ def camel_to_snake(name):
     name = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
     return re.sub('([a-z0-9])([A-Z])', r'\1_\2', name).lower()
 
+last_subtitle_text=""
+def show_sub(text):
+    if text is None:
+        return
+    global last_subtitle_text
+    for row in text.split("\n"):
+        if row.strip()=="":
+            continue
+        if row!=last_subtitle_text:
+            print_large(row)
+    if row.strip()!="":
+        last_subtitle_text=row
+
 def create_player():
     global player
     if blank and "Blanking" in config:
@@ -1613,12 +1932,12 @@ def create_player():
         def observe_pause(_name, value):
             telegram_send_started(True)
 
-#        @player.property_observer('sub-text')
-#        def observe_pause(_name, value):
-#            telegram_send_started(True)
+        @player.property_observer('sub-text')
+        def observe_sub(_name, value):
+            show_sub(value)
 
         @player.property_observer('seeking')
-        def observe_pause(_name, value):
+        def observe_seek(_name, value):
             telegram_send_started(True)
 
         @player.property_observer('paused-for-cache')
@@ -1687,6 +2006,9 @@ def list_tracks(prefix="", folder=MUSIC_FOLDER, excludius=False):
         if len(nameparts)>=2:
             artist = nameparts[0].strip()
         track = nameparts[-1].strip()
+        if track.strip().isdigit() and track!="42": #by coldplay, yes i know this is cheating
+            number = track
+            track = "~unknown (%s)"%track
         if "(" in track:
             track=track[:track.index("(")]+"<small>"+track[track.index("("):]+"</small>"
         yield (filename, artist, album, number, track)
@@ -1747,6 +2069,8 @@ def generate_shuffle_button():
         return "<a href='/music/shuffle'>Turn shuffle off</a>"
     return "<a href='/music/shuffle'>Shuffle</a>"
 
+import unicodedata
+
 def generate_music_page():
     html=generate_shuffle_button()
     html+=" - <a href='/'>Home</a>"
@@ -1754,7 +2078,7 @@ def generate_music_page():
     #html+="<th colspan='2'><a href='/music/album'>Album</a></th>"
     html+="</tr></thead><tbody>"
     yield html
-    for filename, artist, album, number, track in sorted(regular_list_tracks(), key=lambda x: x[-1]):
+    for filename, artist, album, number, track in sorted(regular_list_tracks(), key=lambda x: (unicodedata.normalize("NFKD", x[-1]),x[1])):
         yield generate_music_row(filename, artist, album, number, track, trackfirst=True)
     yield "</tbody></table>"
 
@@ -2041,7 +2365,11 @@ def channel_endless(name):
 
 @app.route("/search/<name>/play/<video>")
 def search_play(name, video):
-    mpv_handle_play_file("https://www.youtube.com/watch?v="+video)
+    if os.path.exists("cache/search/%s.txt"%video):
+        with open("cache/search/%s.txt"%video, "r") as f:
+            mpv_handle_play_file(download_from_url(f.read()))
+    else:
+        mpv_handle_play_file("https://www.youtube.com/watch?v="+video)
     return redirect('/search/%s/#%s'%(name, html_idify(video)))
 
 @app.route("/search/<name>/pause")
@@ -2083,10 +2411,11 @@ def search(name):
     #if '..' in name or '/' in name:
     #    return
     hashname = int.from_bytes(hashlib.sha256(name.encode('utf-8')).digest()[:8], byteorder='big', signed=True)
+    deepwebsearch=search_results_deepweb(name)
     info = get_ytdlp_info("ytsearch12:%s"%name, "search/%16x.json"%hashname)
     songsearch = sorted(set(filter(lambda x: (x[1] is not None and name.lower() in x[1].lower()) or (x[2] is not None and name.lower() in x[2].lower()) or name.lower() in x[-1].lower(), regular_list_tracks())), key=lambda x: list(map(lambda x: "" if x is None else x, x[1:])))
     name=name.replace("<","&gt;").replace("&","&amp;")
-    return generate_page(generate_searchpage(info, name, songsearch), "Searched for: %s"%name)
+    return generate_page(generate_searchpage(info, name, songsearch, deepwebsearch), "Searched for: %s"%name)
 
 def generate_home_page(index, subscriptions):
     windex=int(index)+1
