@@ -736,7 +736,9 @@ def de_emoji(text):
         ("☠️","💀","🏴‍☠️"): "8-X",
         ("🍆","🍌"): "8===D",
         ("❤️","💙","💚","💛","💜","🖤","🤎","🧡","🩵","🩶","🩷","🫀","❤️‍🔥"): "<3",
-        ("🔥"): "=3"
+        ("🔥"): "=3",
+        ("\""): "''", #fix your escaping guys, smh
+        ("\\"): "/"
         }
     for emoji_kind in emojis:
         for emoji in emoji_kind:
