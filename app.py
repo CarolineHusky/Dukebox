@@ -586,14 +586,17 @@ def telegram_bot_send_document(chat, filename):
     return response
 
 
-def telegram_bot_execute(command, data=None, method=None):
+def telegram_bot_execute(command, data=None, method=None, snooper=False):
     try:
         headers={}
         if data is not None:
             data=json.dumps(data).encode("utf-8")
             headers["Content-Length"]=len(data)
             headers["Content-Type"]="application/json"
-        url="https://api.telegram.org/bot"+config["Telegram"]["Token"]+"/" + command
+        if snooper:
+            url="https://api.telegram.org/bot"+config["Telegram"]["ChatSnooper"]+"/" + command
+        else:
+            url="https://api.telegram.org/bot"+config["Telegram"]["Token"]+"/" + command
         request=urllib.request.Request(url,data,headers,method=method)
         return json.load(urllib.request.urlopen(request))
     except urllib.error.HTTPError as e:
@@ -632,9 +635,10 @@ def telegram_bot_get_updates():
             callback_query=update["callback_query"]
             telegram_bot_process_callback(update["callback_query"]["data"], str(update["callback_query"]["from"]["id"]))
             telegram_bot_execute("answerCallbackQuery",{"callback_query_id": callback_query["id"]})
+    telegram_bot_snooper()
 
-def telegram_bot_download_file(file_id, destination=None, chat=None, message=None):
-    file_info=telegram_bot_execute("getFile", {"file_id": file_id})
+def telegram_bot_download_file(file_id, destination=None, chat=None, message=None, snooper=False):
+    file_info=telegram_bot_execute("getFile", {"file_id": file_id}, snooper=snooper)
     file_path=file_info['result']['file_path']
     if destination is None:
         destination=file_info['result']['file_path'].split('/')[-1]
@@ -646,7 +650,10 @@ def telegram_bot_download_file(file_id, destination=None, chat=None, message=Non
         return destination
 
     try:
-        url="https://api.telegram.org/file/bot"+config["Telegram"]["Token"]+"/"+file_path
+        if snooper:
+            url="https://api.telegram.org/file/bot"+config["Telegram"]["ChatSnooper"]+"/"+file_path
+        else:
+            url="https://api.telegram.org/file/bot"+config["Telegram"]["Token"]+"/"+file_path
         urllib.request.urlretrieve(url, destination)
         if chat is not None and message is not None:
             known_forwards[destination]=(chat,message)
@@ -686,6 +693,116 @@ def telegram_bot_process_callback(command,chat_id):
 
 hook_sticker_state={}
 
+#https://ux.stackexchange.com/questions/22520/how-long-does-it-take-to-read-x-number-of-characters
+def read_time(text):
+    ''' Calculate the amount of time needed to read the notification '''
+    wpm = 180  # readable words per minute
+    word_length = 5  # standardized number of chars in calculable word
+    words = len(text)/word_length
+    words_time = ((words/wpm)*60)*1000
+    delay = 1500  # milliseconds before user starts reading the notification
+    bonus = 1000  # extra time
+
+    return (delay + words_time + bonus)/1000.0
+
+
+def de_emoji(text):
+    emojis={
+        ("☺️","🙂","😊","😀"): ":-)",
+        ("😃","😄","😁","😆","😂","😂"): ":-D",
+        ("😎"): "8-)",
+        ("☹️","🙁","😞","😟","😣","😖","😪", "😒"): ":-(",
+        ("😢"): ":'-(",
+        ("😭"): ":=(",
+        ("🥲","🥹"): ":'-)",
+        ("😠","😡"): ">:-(",
+        ("😨","😧","😦","😱","😫","😩","😮","😯","😲"): ":-O",
+        ("😺","😸","🐱"): ":-3",
+        ("😼"): ">:-3",
+        ("😗","😙","😚","😘","😍"): ":-X",
+        ("😉"): ";-)",
+        ("😜"): ";-P",
+        ("🫤"): ":-/",
+        ("🤔"): ":-?",
+        ("😕","😟","😐","😑","🤨"): ":-|",
+        ("😳","😞","😖"): ":-$",
+        ("🤐","😶"): ":-&",
+        ("😇","👼"): "0:-3",
+        ("😈"): ">:-)",
+        ("😏"): ":-J",
+        ("🥴"): "#-)",
+        ("😵","😵‍💫"): "%-)",
+        ("🤒","😷","🤢"): ":-#",
+        ("☠️","💀","🏴‍☠️"): "8-X",
+        ("🍆","🍌"): "8===D",
+        ("❤️","💙","💚","💛","💜","🖤","🤎","🧡","🩵","🩶","🩷","🫀","❤️‍🔥"): "<3",
+        ("🔥"): "=3"
+        }
+    for emoji_kind in emojis:
+        for emoji in emoji_kind:
+            text=text.replace(emoji,f" {emojis[emoji_kind]} ")
+    return text
+
+def wall_text(text_line):
+    text_line=de_emoji(text_line)
+    create_player()
+    text_line = text_line.lstrip('\n')
+    text=player.osd_msg1+"\n"+text_line
+    text=text.lstrip("\n")
+    player.osd_msg1=text
+    from threading import Timer
+    def stop_wall():
+        player.osd_msg1=player.osd_msg1.lstrip(text).lstrip("\n")
+    t = Timer(read_time(text), stop_wall)
+    t.start()
+
+def sticker_overlay(download_file):
+    from PIL import Image
+    create_player()
+    with Image.open(download_file) as im:
+        overlay = player.create_image_overlay()
+        x=random.randint(0,player.dwidth-im.width)
+        y=random.randint(0,player.dheight-im.height)
+        overlay.update(im, pos=(x,y))
+        from threading import Timer
+        def stop_s():
+            overlay.remove()
+        t = Timer(random.random()*4+1, stop_s)
+        t.start()
+
+def telegram_bot_snooper():
+    if not "ChatSnooper" in config["Telegram"]:
+        return
+    updates=telegram_bot_execute("getUpdates", {"offset": int(config["Telegram"]["LastUpdateSnooper"])+1, "allowed_updates": ["message", "callback_query"]}, snooper=True)["result"]
+    for update in updates:
+        if update['update_id']>int(config["Telegram"]["LastUpdateSnooper"]):
+            config["Telegram"]["LastUpdateSnooper"] = str(update['update_id'])
+            with open("config.ini", "w") as f:
+                config.write(f)
+        if not "message" in update:
+            continue
+        if "caption" in update["message"]:
+            if "first_name" in update["message"]["from"]:
+                text+="["+update["message"]["from"]["first_name"]+"] "
+            text+="[img] "
+            text+=update["message"]["caption"]
+            print(de_emoji(text))
+            wall_text(text[:512])
+        if "text" in update["message"]:
+            text=""
+            if "first_name" in update["message"]["from"]:
+                text+="["+update["message"]["from"]["first_name"]+"] "
+            text+=update["message"]["text"]
+            print(de_emoji(text))
+            wall_text(text[:512])
+        if "sticker" in update["message"]:
+            if 'set_name' in update["message"]["sticker"]["set_name"]:
+                download_file=telegram_bot_download_file(update["message"]["sticker"]["file_id"],update["message"]["sticker"]["emoji"], update["message"]["chat"]["id"], update["message"]["message_id"], snooper=True)
+            else:
+                download_file=telegram_bot_download_file(update["message"]["sticker"]["file_id"],update["message"]["sticker"]["set_name"]+" "+update["message"]["sticker"]["emoji"], update["message"]["chat"]["id"], update["message"]["message_id"], snooper=True)
+            sticker_overlay(download_file)
+            print(update["message"]["sticker"]["emoji"])
+
 def play_url(text):
     for e in extractor.list_extractor_classes():
         if e.working() and e.suitable(text) and e.IE_NAME != "generic":
@@ -710,6 +827,7 @@ def play_url(text):
 
 
 output_device_select_message={}
+seekpos=None
 
 def bot_command(text, chat_id, chat_name=None):
     global shuffle
@@ -718,6 +836,8 @@ def bot_command(text, chat_id, chat_name=None):
     global user_update_lock
     global hook_sticker_state
     global output_device_select_message
+    global player
+    global seekpos
     text=text.strip()
     if not blank:
         if chat_name:
@@ -783,6 +903,16 @@ def bot_command(text, chat_id, chat_name=None):
         if str(chat_id) in output_device_select_message:
             telegram_bot_execute("deleteMessage",{"message_id":output_device_select_message[str(chat_id)],"chat_id":chat_id})
             del output_device_select_message[str(chat_id)]
+    if text=="/jack":
+        if player:
+            player.audio_device = "auto"
+        config["Player"]["AudioDevice"]="auto"
+        with open("config.ini","w") as f:
+           config.write(f)
+        del player
+        player=None
+        create_player()
+        return False
     if text=="/video":
         t=[]
         create_player()
@@ -823,6 +953,7 @@ def bot_command(text, chat_id, chat_name=None):
         if text=="":
             return
         telegram_bot_send_message_all(text, pinned=False)
+        wall_text(text)
         return False
     if text=="/porny":
         porny = True
@@ -877,9 +1008,32 @@ def bot_command(text, chat_id, chat_name=None):
         return False #should never happen lmao
     if player is None or player.idle_active:
         return
+    if text=="/share":
+        create_player()
+        telegram_bot_send_message(player.path, chat_id)
+        return False
+    if text=="/stop":
+        create_player()
+        player.pause = True
+        telegram_bot_send_message("%s /seek %ds"%(player.path, player.time_pos), chat_id)
+        return False
     if text.startswith("/seek"):
-        seekpos= max(0, min(100,int(text.split(" ")[-1])))
-        player.seek(seekpos,"absolute-percent")
+        create_player()
+        while player.seeking or player.paused_for_cache:
+            pass
+        seek_pos=text.split(" ")[-1]
+        if seek_pos.endswith("s"):
+            try:
+                player.seek(int(seek_pos[:-1]), "absolute")
+                seekpos = None
+            except SystemError:
+                seekpos = int(seek_pos[:-1])
+        else:
+            seek_pos= max(0, min(100,int(seek_pos)))
+            player.seek(seek_pos,"absolute-percent")
+        return False
+    if text=="/watched":
+        player.seek(player.duration)
         return False
     if text=="/next":
         create_player()
@@ -962,10 +1116,10 @@ def telegram_bot_process_updates():
                     player.frame_back_step()
                     continue
                 if text.lower()=="m" and player.pause:
-                    player.seek(1)
+                    player.sub_seek(1)
                     continue
                 if text.lower()=="z" and player.pause:
-                    player.seek(-1)
+                    player.sub_seek(-1)
                     continue
             if ele=="entities":
                 for entity in update[ele]:
@@ -989,7 +1143,7 @@ def telegram_bot_process_updates():
                             has_updates=True
                     if entity["type"]=="bot_command" and "text" in update:
                         text=update["text"][entity["offset"]:]
-                        text="/"+text.split("/")[1]
+                        #text="/"+text.split("/")[1]
                         username=None
                         if "first_name" in update["chat"]:
                             username=update["chat"]["first_name"]
@@ -1387,7 +1541,7 @@ def get_thumbnail_for_downloader(info, destination, wsize=256, hsize=256):
 def generate_thumbnail(info, uploader=None):
     if "telegram_thumbnail" in info and info['telegram_thumbnail'] is not None:
         return "<img src='%s'/>"%generate_b64thumb(info['telegram_thumbnail'])
-    if not 'thumbnails' in info:
+    if not 'thumbnails' in info or len(info['thumbnails'])==0:
         return ""
     if 'fulltitle' in info:
         title=info['fulltitle']
@@ -1418,10 +1572,13 @@ def generate_description(info, uploader=None, clickable=False, mainpage=True, fr
     else:
         title=info['title']
     if clickable:
+        idify=html_idify(info['id'].split('/')[-1])
+        if mainpage==False:
+            idify=""
         if not info['id'].startswith("/") and not info['id'].startswith("cache"):
-            html="<figure id=\"%s\">"%html_idify(info['id'].split('/')[-1])
+            html="<figure id=\"%s\">"%idify
         else:
-            html="<figure class='notyt' id=\"%s\">"%html_idify(info['id'].split('/')[-1])
+            html="<figure class='notyt' id=\"%s\">"%idify
     else:
         html="<figure>"
     if not fromhome:
@@ -1819,6 +1976,7 @@ def get_ytdlp_info(url, cache, endless=False):
 screenoff=False
 def mpv_handle_start(event):
     global screenoff
+    global seekpos
     os.makedirs("cache/started", exist_ok=True)
     if len(list(filter(lambda x: x['id']==event.data.playlist_entry_id, player.playlist)))==0:
         perform_shuffle()
@@ -1829,6 +1987,9 @@ def mpv_handle_start(event):
     if os.path.exists('cache/started/%s.started'%name):
         os.remove('cache/started/%s.started'%name)
     open('cache/started/%s.started'%name, 'a').close()
+    if seekpos is not None:
+        player.seek=seekpos
+        seekpos=None
     sponsorblock(filename)
     if player.vo_configured:
         #print(player.video_params)
@@ -1885,6 +2046,19 @@ def camel_to_snake(name):
     name = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
     return re.sub('([a-z0-9])([A-Z])', r'\1_\2', name).lower()
 
+swearwords=[r"\b[a@][s$][s$]\b", r"\b[a@][s$][s$]h.*\b", r"\b[a@][s$][s$]w.*\b", r"[a@][s$-][s$-]?h[o0][l1][e3][s$]?", r"b[a@][s$][t+][a@]rd ", r"b[a@]d[a@]ss ", r"b[e3][a@][s$][t+][i1][a@]?[l1]([i1][t+]y)?", r"b[e3][a@][s$][t+][i1][l1][i1][t+]y", r"b[e3][s$][t+][i1][a@][l1]([i1][t+]y)?", r"b[i1][t+]ch[s$]?", r"b[i1][t+]ch[e3]r[s$]?", r"b[i1][t+]ch[e3][s$]", r"b[i1][t+]ch[i1]ng?", r"b[l1][o0]wj[o0]b[s$]?", r"b[l1][o0]w m[e3]?", r"bu[l1][l1][s$]h[i1][t+]", r"c[l1][i1][t+]", r"c[l1][i1][t+]", r"\b(c|k|ck|q)[o0](c|k|ck|q)[s$]?\b", r"(c|k|ck|q)[o0](c|k|ck|q)[s$]u", r"(c|k|ck|q)[o0](c|k|ck|q)[s$]u(c|k|ck|q)[e3]d ", r"(c|k|ck|q)[o0](c|k|ck|q)[s$]u(c|k|ck|q)[e3]r", r"(c|k|ck|q)[o0](c|k|ck|q)[s$]u(c|k|ck|q)[i1]ng", r"(c|k|ck|q)[o0](c|k|ck|q)[s$]u(c|k|ck|q)[s$]", r"\bcum[s$]?\b", r"cumm??[e3]r", r"cumm?[i1]ngcock", r"(c|k|ck|q)um[s$]h[o0][t+]", r"(c|k|ck|q)un[i1][l1][i1]ngu[s$]", r"(c|k|ck|q)un[i1][l1][l1][i1]ngu[s$]", r"(c|k|ck|q)unn[i1][l1][i1]ngu[s$]", r"(c|k|ck|q)un[t+][s$]?", r"(c|k|ck|q)un[t+][l1][i1](c|k|ck|q)", r"(c|k|ck|q)un[t+][l1][i1](c|k|ck|q)[e3]r", r"(c|k|ck|q)un[t+][l1][i1](c|k|ck|q)[i1]ng", r"cyb[e3]r(ph|f)u(c|k|ck|q)", r"d[a@]mn", r"d[i1]ck", r"d[i1][l1]d[o0]", r"d[i1][l1]d[o0][s$]", r"d[i1]n(c|k|ck|q)", r"d[i1]n(c|k|ck|q)[s$]", r"[e3]j[a@]cu[l1]", r"(ph|f)[a@]g[s$]?", r"(ph|f)[a@]gg[i1]ng", r"(ph|f)[a@]gg?[o0][t+][s$]?", r"(ph|f)[a@]gg[s$]", r"(ph|f)[e3][l1][l1]?[a@][t+][i1][o0]", r"(ph|f)u(c|k|ck|q)", r"(ph|f)u(c|k|ck|q)[s$]?", r"g[a@]ngb[a@]ng[s$]?", r"g[a@]ngb[a@]ng[e3]d", r"g[a@]y", r"h[o0]m?m[o0]", r"h[o0]rny", r"j[a@](c|k|ck|q)\-?[o0](ph|f)(ph|f)?", r"j[e3]rk\-?[o0](ph|f)(ph|f)?", r"j[i1][s$z][s$z]?m?", r"[ck][o0]ndum[s$]?", r"mast(e|ur)b(8|ait|ate)", r"n+[i1]+[gq]+[e3]*r+[s$]*", r"[o0]rg[a@][s$][i1]m[s$]?", r"[o0]rg[a@][s$]m[s$]?", r"p[e3]nn?[i1][s$]", r"p[i1][s$][s$]", r"p[i1][s$][s$][o0](ph|f)(ph|f) ", r"p[o0]rn", r"p[o0]rn[o0][s$]?", r"p[o0]rn[o0]gr[a@]phy", r"pr[i1]ck[s$]?", r"pu[s$][s$][i1][e3][s$]", r"pu[s$][s$]y[s$]?", r"[s$][e3]x", r"[s$]h[i1][t+][s$]?", r"[s$][l1]u[t+][s$]?", r"[s$]mu[t+][s$]?", r"[s$]punk[s$]?","[t+]w[a@][t+][s$]?"]
+
+import re, random
+
+def swear(length):
+    out=""
+    for letter in range(length):
+        t=random.choice("!@#$%^&*?~m")
+        while out!="" and out[-1]==t:
+            t=random.choice("!@#$%^&*?~")
+        out+=t
+    return out
+
 last_subtitle_text=""
 def show_sub(text):
     if text is None:
@@ -1894,7 +2068,14 @@ def show_sub(text):
         if row.strip()=="":
             continue
         if row!=last_subtitle_text:
-            print_large(row)
+            bad=False
+            for pattern in swearwords:
+                if re.search(pattern, text, re.IGNORECASE):
+                    bad=True
+                    text=re.sub(pattern, lambda m: swear(len(m.group(0))), text, 0, re.IGNORECASE)
+            print(row)
+            #mpv.show_text(text)
+            #print_large(row)
     if row.strip()!="":
         last_subtitle_text=row
 
@@ -2150,6 +2331,7 @@ def perform_shuffle(inner=False):
         tracks = list(map(lambda x: x[0],regular_list_tracks()))
     random.shuffle(tracks)
     for ele in tracks:
+      try:
         if not os.path.exists('cache/started/%s.started'%ele.split("/")[-1]):
             if porny:
                 if pornfolder==[]:
@@ -2159,14 +2341,32 @@ def perform_shuffle(inner=False):
             else:
                 mpv_handle_play_file(find_track(ele), True)
             break
+      except Exception:
+        continue
     else:
         for ele in tracks:
+          if os.path.exists('cache/started/%s.started'%ele.split("/")[-1]):
             os.remove('cache/started/%s.started'%ele.split("/")[-1])
-        perform_shuffle(True)
-    if porny:
+        if not inner:
+          perform_shuffle(True)
+    if porny and not inner:
         perform_shuffle(True)
     if not inner:
         telegram_send_started()
+
+resolve_url=None
+def unfold_resolve(yieldeable):
+    global resolve_url
+    text=""
+    for ele in yieldeable:
+        if resolve_url is not None:
+            text+=ele
+            if f"id=\"{resolve_url}\"" in text:
+                yield text
+                resolve_url=None
+        else:
+            yield ele
+
 
 @app.route("/folder/")
 def folder_basepage():
@@ -2177,11 +2377,13 @@ def folder_basepage():
 def folder(foldername):
     if "/" in foldername:
         return
-    return generate_page(generate_folderpage(foldername,["mp3","flac","wav","mp4",'mkv',"webm", "jpg","jpeg","png","gif"]), foldername.capitalize())
+    return unfold_resolve(generate_page(generate_folderpage(foldername,["mp3","flac","wav","mp4",'mkv',"webm", "jpg","jpeg","png","gif"]), foldername.capitalize()))
 
 
 @app.route("/folder/<foldername>/play/<name>")
 def folder_play(foldername,name):
+    global resolve_url
+    resolve_url=html_idify(name)
     mpv_handle_play_file(os.path.expanduser(os.path.join(config['Commands'][foldername],name)))
     return redirect('/folder/%s/#%s'%(foldername,html_idify(name)))
 
@@ -2209,19 +2411,23 @@ def telegram_page():
             file.save(os.path.join(config['Folders']["Uploads"], file.filename))
             mpv_handle_play_file(os.path.join(config['Folders']["Uploads"],file.filename))
         return redirect('/telegram')
-    return generate_page(generate_telegrampage(), "Telegram")
+    return unfold_resolve(generate_page(generate_telegrampage(), "Telegram"))
 
 @app.route("/telegram/play/<name>")
 def telegram_play(name):
+    global resolve_url
+    resolve_url=html_idify(name)
     mpv_handle_play_file(os.path.join(config['Folders']["Uploads"],name))
-    return redirect('/telegram/#%s'%name)
+    return redirect('/telegram/#%s'%html_idify(name))
 
 @app.route("/telegram/videos/")
 def telegram_videopage():
-    return generate_page(generate_telegrampage(["mp4",'mkv',"webm"]), "Telegram")
+    return unfold_resolve(generate_page(generate_telegrampage(["mp4",'mkv',"webm"]), "Telegram"))
 
 @app.route("/telegram/videos/play/<name>")
 def telegram_videoplay(name):
+    global resolve_url
+    resolve_url=html_idify(name)
     mpv_handle_play_file(os.path.join(config['Folders']["Uploads"],name))
     return redirect('/telegram/videos/#%s'%html_idify(name))
 
@@ -2380,6 +2586,8 @@ def search_pause(name):
 @app.route("/search/")
 def search_base():
     searchtterm=request.args.get('search')
+    if searchtterm is None:
+        return redirect("/user/")
     if searchtterm.startswith("/"):
         bot_command(searchtterm, None)
         return redirect("/")
@@ -2463,6 +2671,7 @@ def generate_home_page(index, subscriptions):
             html+="</section><hr/>"
             if anydone:
                 yield html
+        yield ", ".join(sorted(subscriptions))
         yield "<h2 style='margin:auto;'><a href='%d'>Load more...</a></h2>"%windex
     #return html
 
