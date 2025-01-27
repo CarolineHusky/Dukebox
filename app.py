@@ -24,6 +24,9 @@ config=configparser.ConfigParser()
 config.optionxform=str
 config.read('config.ini')
 
+import datetime
+start_time=datetime.datetime.now().timestamp()
+
 blank=False
 if blank:
     log = logging.getLogger('werkzeug')
@@ -585,6 +588,66 @@ def telegram_bot_send_document(chat, filename):
     response=requests.post(url, data={'chat_id': chat}, files={'document': open(filename,"rb")})
     return response
 
+from enum import Enum
+
+class DenonAvrCommand(Enum):
+    CONFIG_BRAND = 1
+    CONFIG_LANGUAGE = 2
+    CONFIG_FRIENDLYNAME = 3
+    CONFIG_ZONEPOWER = 4
+    CONFIG_MODELTYPE = 5
+    CONFIG_ZONE_RENAME = 6
+    CONFIG_SOURCE_LIST = 7
+    CONFIG_SETUPLOCK = 8
+    CONFIG_BTSINGLEUSED = 9
+    CONFIG_SPEAKER_PRESET = 10
+    CONFIG_SYSTEM = 11
+    VOLUME_MAIN = "MV"
+    VOLUME_ZONE2 = "Z2"
+    VOLUME_MAIN_FRONT_LEFT = "FL"
+    VOLUME_MAIN_FRONT_RIGHT = "FR"
+    VOLUME_MAIN_FRONT_CENTER = "C"
+    VOLUME_MAIN_SUBWOOFER = "SW"
+    VOLUME_MAIN_SURROUND_LEFT = "SL"
+    VOLUME_MAIN_SURROUND_RIGHT = "SR"
+    VOLUME_MAIN_SOUND_MODE_MOVIE = "MSMOVIE"
+    VOLUME_MAIN_SOUND_MODE_MUSIC = "MSMUSIC"
+    VOLUME_MAIN_SOUND_MODE_GAME = "MSDIRECR"
+    VOLUME_MAIN_SOUND_MODE_PURE = "MSPURE DIRECT"
+    VOLUME_MAIN_SOUND_MODE_STEREO = "MSSTEREO"
+    VOLUME_MAIN_SOUND_MODE_DOLBY = "MSDOLBY DIGITAL"
+    VOLUME_MAIN_SOUND_MODE_DTS = "MSDTS SURROUND"
+    VOLUME_ZONE2_FRONT_LEFT = "Z2CVFL "
+    VOLUME_ZONE2_FRONT_RIGHT = "Z2CVFR "
+
+class DenonAvrMenuCommand(Enum):
+    CONFIG_SETUPMENU = 1
+    CONFIG_AUDIO = 2
+    CONFIG_VIDEO = 3
+    CONFIG_INPUTS = 4
+    CONFIG_SPEAKERS = 5
+    CONFIG_NETWORK = 6
+    CONFIG_HEOSACCOUNT = 7
+    CONFIG_GENERAL = 8
+    CONFIG_SETUPASSISTANT = 9
+
+def receiver_execute(command_type: DenonAvrCommand, command_data):
+    import ssl
+    myssl = ssl.create_default_context();
+    myssl.check_hostname=False
+    myssl.verify_mode=ssl.CERT_NONE
+    headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:134.0) Gecko/20100101 Firefox/134.0", "Accept":"text/plain, */*; q=0.01", "Connection":"keep-alive", "Priority":"u=0","Referer":"https://192.168.1.130:10443/general/general.html"}
+    if isinstance(command_type.value, int):
+        url="https://192.168.1.130:10443/ajax/globals/set_config?type=%d&data=%s"%(command_type.value, command_data.replace(" ", "%20"))
+    else:
+        url="http://192.168.1.130:8080/goform/formiPhoneAppDirect.xml?%s%s"%(command_type.value,command_data.replace(" ", "%20"))
+    print(url)
+    try:
+        request=urllib.request.Request(url, None, headers)
+        return urllib.request.urlopen(request, context=myssl)
+    except urllib.error.HTTPError as e:
+        print(e)
+    return None
 
 def telegram_bot_execute(command, data=None, method=None, snooper=False):
     try:
@@ -738,7 +801,8 @@ def de_emoji(text):
         ("❤️","💙","💚","💛","💜","🖤","🤎","🧡","🩵","🩶","🩷","🫀","❤️‍🔥"): "<3",
         ("🔥"): "=3",
         ("\""): "''", #fix your escaping guys, smh
-        ("\\"): "/"
+        ("\\"): "/",
+        ("🦝","🦨"): "•⩊•"
         }
     for emoji_kind in emojis:
         for emoji in emoji_kind:
@@ -783,26 +847,32 @@ def telegram_bot_snooper():
                 config.write(f)
         if not "message" in update:
             continue
+        if update["message"]["date"]<start_time:
+            continue
         if "caption" in update["message"]:
+            text=""
             if "first_name" in update["message"]["from"]:
-                text+="["+update["message"]["from"]["first_name"]+"] "
+                text+="["+update["message"]["from"]["first_name"].split(" ")[0]+"] "
             text+="[img] "
-            text+=update["message"]["caption"]
+            text+=update["message"]["caption"].replace("\"","''")
             print(de_emoji(text))
             wall_text(text[:512])
         if "text" in update["message"]:
             text=""
             if "first_name" in update["message"]["from"]:
-                text+="["+update["message"]["from"]["first_name"]+"] "
-            text+=update["message"]["text"]
+                text+="["+update["message"]["from"]["first_name"].split(" ")[0]+"] "
+            if "reply_to_message" in update["message"]:
+                text+="@"+update["message"]["reply_to_message"]["from"]["first_name"].split(" ")[0]+": "
+            text+=update["message"]["text"].replace("\"","''")
             print(de_emoji(text))
             wall_text(text[:512])
         if "sticker" in update["message"]:
-            if 'set_name' in update["message"]["sticker"]["set_name"]:
-                download_file=telegram_bot_download_file(update["message"]["sticker"]["file_id"],update["message"]["sticker"]["emoji"], update["message"]["chat"]["id"], update["message"]["message_id"], snooper=True)
-            else:
-                download_file=telegram_bot_download_file(update["message"]["sticker"]["file_id"],update["message"]["sticker"]["set_name"]+" "+update["message"]["sticker"]["emoji"], update["message"]["chat"]["id"], update["message"]["message_id"], snooper=True)
-            sticker_overlay(download_file)
+            if player is not None and player.vo_configured:
+                if 'set_name' in update["message"]["sticker"]["set_name"]:
+                    download_file=telegram_bot_download_file(update["message"]["sticker"]["file_id"],update["message"]["sticker"]["emoji"], update["message"]["chat"]["id"], update["message"]["message_id"], snooper=True)
+                else:
+                    download_file=telegram_bot_download_file(update["message"]["sticker"]["file_id"],update["message"]["sticker"]["set_name"]+" "+update["message"]["sticker"]["emoji"], update["message"]["chat"]["id"], update["message"]["message_id"], snooper=True)
+                sticker_overlay(download_file)
             print(update["message"]["sticker"]["emoji"])
 
 def play_url(text):
@@ -846,6 +916,111 @@ def bot_command(text, chat_id, chat_name=None):
             print(("[telegram bot/%s] "%chat_name)+text)
         else:
             print("[telegram bot] "+text)
+    if text=="/bedroom":
+        text="Receiver BEDROOM remote: Do not wake up Caroline"
+        t=[
+            [
+                {"text": "20%", "callback_data": "/bedroom 50"},
+                {"text": "40%", "callback_data": "/bedroom 55"},
+                {"text": "60%", "callback_data": "/bedroom 60"},
+                {"text": "80%", "callback_data": "/bedroom 65"},
+                {"text": "100%", "callback_data": "/bedroom 70"}],
+           [
+            {"text": "PC", "callback_data": "/bedroom pc"},
+            {"text": "CD", "callback_data": "/bedroom cd"},
+            {"text": "Front HDMI", "callback_data": "/bedroom front"}],[
+            {"text": "Wii/OSSC", "callback_data": "/bedroom wii"},
+            {"text": "Bluray", "callback_data": "/bedroom bluray"}],[
+            {"text": "OFF", "callback_data": "/bedroom off"},
+            {"text": "Mute", "callback_data": "/bedroom 10"},
+            {"text": "ON", "callback_data": "/bedroom on"}
+            ]]
+        output_device_select_message[str(chat_id)] = telegram_bot_execute("sendMessage", {"chat_id": chat_id, "text":text, "reply_markup": {"inline_keyboard": t}})["result"]["message_id"]
+        return False
+    if text=="/bedroom off":
+        receiver_execute(DenonAvrCommand.CONFIG_ZONEPOWER, "<MainZone><Power>3</Power></MainZone>")
+        return False
+    if text=="/bedroom on":
+        receiver_execute(DenonAvrCommand.CONFIG_ZONEPOWER, "<MainZone><Power>1</Power></MainZone>")
+        receiver_execute(DenonAvrCommand.CONFIG_SOURCE_LIST, "<Source zone=\"1\" index=\"1\"></Source>")
+        receiver_execute(DenonAvrCommand.VOLUME_MAIN, "70")
+        return False
+    if text.startswith("/bedroom ") and text.lstrip("/bedroom ").isdecimal():
+        value = int(text.lstrip("/bedroom "))
+        if value>=10 and value<=70:
+            receiver_execute(DenonAvrCommand.VOLUME_MAIN, str(value))
+            return False
+    if text.startswith("/bedroom "):
+        if text.endswith("cd"):
+            text=9
+        elif text.endswith("pc"):
+            text=1
+        elif text.endswith("front"):
+            text=7
+        elif text.endswith("wii"):
+            text=8
+        elif text.endswith("bluray"):
+            text=3
+        else:
+            text=1
+        receiver_execute(DenonAvrCommand.CONFIG_SOURCE_LIST, "<Source zone=\"1\" index=\"%d\"></Source>"%text)
+        receiver_execute(DenonAvrCommand.VOLUME_ZONE2, "70")
+        if str(chat_id) in output_device_select_message:
+            telegram_bot_execute("deleteMessage",{"message_id":output_device_select_message[str(chat_id)],"chat_id":chat_id})
+            del output_device_select_message[str(chat_id)]
+        return False
+    if text.startswith("/living ") and text.lstrip("/living ").isdecimal():
+        value = int(text.lstrip("/living "))
+        if value>=10 and value<=70:
+            receiver_execute(DenonAvrCommand.VOLUME_ZONE2, str(value))
+            return False
+    if text=="/living":
+        text="Receiver LIVING ROOM remote: Do not wake up Evalyn"
+        t=[
+            [
+                {"text": "20%", "callback_data": "/living 50"},
+                {"text": "40%", "callback_data": "/living 55"},
+                {"text": "60%", "callback_data": "/living 60"},
+                {"text": "80%", "callback_data": "/living 65"},
+                {"text": "100%", "callback_data": "/living 70"}],
+            [
+            {"text": "PC", "callback_data": "/living pc"},
+            {"text": "CD", "callback_data": "/living cd"},
+            {"text": "Front HDMI", "callback_data": "/living front"}],[
+            {"text": "Wii/OSSC", "callback_data": "/living wii"},
+            {"text": "Bluray", "callback_data": "/living bluray"}],[
+            {"text": "OFF", "callback_data": "/living off"},
+            {"text": "Mute", "callback_data": "/living 10"},
+            {"text": "ON", "callback_data": "/living on"}
+            ]]
+        output_device_select_message[str(chat_id)] = telegram_bot_execute("sendMessage", {"chat_id": chat_id, "text":text, "reply_markup": {"inline_keyboard": t}})["result"]["message_id"]
+        return False
+    if text=="/living off":
+        receiver_execute(DenonAvrCommand.CONFIG_SOURCE_LIST, "<Zone2><Power>3</Power></Zone2>")
+        return False
+    if text=="/living on":
+        receiver_execute(DenonAvrCommand.CONFIG_ZONEPOWER, "<Zone2><Power>1</Power></Zone2>")
+        receiver_execute(DenonAvrCommand.CONFIG_SOURCE_LIST, "<Source zone=\"2\" index=\"1\"></Source>")
+        receiver_execute(DenonAvrCommand.VOLUME_ZONE2, "70")
+        return False
+    if text.startswith("/living "):
+        if text.endswith("cd"):
+            text=9
+        elif text.endswith("pc"):
+            text=1
+        elif text.endswith("front"):
+            text=7
+        elif text.endswith("wii"):
+            text=8
+        elif text.endswith("bluray"):
+            text=3
+        else:
+            text=1
+        receiver_execute(DenonAvrCommand.CONFIG_SOURCE_LIST, "<Source zone=\"2\" index=\"%d\"></Source>"%text)
+        if str(chat_id) in output_device_select_message:
+            telegram_bot_execute("deleteMessage",{"message_id":output_device_select_message[str(chat_id)],"chat_id":chat_id})
+            del output_device_select_message[str(chat_id)]
+        return False
     if text.startswith("/vol"):
         player.volume = max(0, min(300,int(text.split(" ")[-1])))
         return False
@@ -905,6 +1080,7 @@ def bot_command(text, chat_id, chat_name=None):
         if str(chat_id) in output_device_select_message:
             telegram_bot_execute("deleteMessage",{"message_id":output_device_select_message[str(chat_id)],"chat_id":chat_id})
             del output_device_select_message[str(chat_id)]
+        return False
     if text=="/jack":
         if player:
             player.audio_device = "auto"
